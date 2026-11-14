@@ -1,0 +1,44 @@
+#import <Foundation/Foundation.h>
+#include <assert.h>
+typedef enum {ElanCaptureSucceeded,ElanCaptureImageRejected,ElanCaptureTimedOut,ElanCaptureDeviceError,ElanCaptureAllocationError,ElanCaptureCancelled,TestControllerStopped} Result;
+typedef struct {unsigned n;} ElanpressFeatures;
+static int cancelled,capture_last_result,calls,successful,sensor;static Result seq[8];static int count;
+@interface Connection:NSObject
+@property int invalidations;
+-(void)invalidate;
+@end
+@implementation Connection
+-(void)invalidate {self.invalidations++;}
+@end
+@interface Controller:NSObject
+@property BOOL stopping;
+@end
+@implementation Controller
+@end
+static Controller *active;
+static double testClock;static unsigned capture_timeout_seconds=35;static double capture_milliseconds(void){return testClock;}
+static ElanpressFeatures *captureUntil(int *s,double deadline){assert(deadline==35000);testClock+=1000;static ElanpressFeatures f={20};assert(calls<count);Result x=seq[calls++];capture_last_result=x;if(x==ElanCaptureCancelled)cancelled=1;if(x==TestControllerStopped)active.stopping=YES;return x==ElanCaptureSucceeded?&f:NULL;}
+@interface Runner:NSObject
+@property Connection *connection;
+-(void)run:(Controller*)controller;
+@end
+@implementation Runner
+-(void)run:(Controller*)controller {unsigned long long client=1;
+/* PROVIDER_LOOP */
+                successful++; break;
+            }}
+
+@end
+static void test(const char*n,Result*a,int len,int expectedCalls,int expectedOK,int expectedInvalid,BOOL expectedStop){@autoreleasepool{memcpy(seq,a,len*sizeof(Result));count=len;calls=successful=cancelled=0;testClock=0;Controller*c=[Controller new];active=c;Runner*r=[Runner new];r.connection=[Connection new];[r run:c];assert(calls==expectedCalls);assert(successful==expectedOK);assert(r.connection.invalidations==expectedInvalid);assert(c.stopping==expectedStop);printf("PASS %s calls=%d success=%d invalidations=%d stopping=%d\n",n,calls,successful,r.connection.invalidations,c.stopping);}}
+int main(void){
+#define T(n,ec,ok,iv,st,...) {Result a[]={__VA_ARGS__};test(n,a,sizeof(a)/sizeof(*a),ec,ok,iv,st);}
+T("reject_then_success",2,1,0,NO,ElanCaptureImageRejected,ElanCaptureSucceeded);
+T("four_rejections_then_success",5,1,0,NO,ElanCaptureImageRejected,ElanCaptureImageRejected,ElanCaptureImageRejected,ElanCaptureImageRejected,ElanCaptureSucceeded);
+T("bounded_rejections",5,0,1,YES,ElanCaptureImageRejected,ElanCaptureImageRejected,ElanCaptureImageRejected,ElanCaptureImageRejected,ElanCaptureImageRejected);
+T("cancel_no_retry",1,0,0,NO,ElanCaptureCancelled);
+T("reject_then_cancel",2,0,0,NO,ElanCaptureImageRejected,ElanCaptureCancelled);
+T("timeout_not_retryable",1,0,1,YES,ElanCaptureTimedOut);
+T("device_fault_not_retryable",1,0,1,YES,ElanCaptureDeviceError);
+T("allocation_fault_not_retryable",1,0,1,YES,ElanCaptureAllocationError);
+T("external_stop_no_invalidate",1,0,0,YES,TestControllerStopped);
+return 0;}

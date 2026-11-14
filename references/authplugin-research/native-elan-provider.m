@@ -169,7 +169,9 @@ static NSUUID *managedIdentityUUID(id identity) {
 - (void)registerDelegate:(BOOL)enabled client:(uint64_t)client replyBlock:(void (^)(int))reply { reply(0); }
 - (void)getDeviceHardwareState:(uint64_t)client replyBlock:(void (^)(int, unsigned int))reply { reply(0, 0); }
 - (void)listAccessories:(uint64_t)client replyBlock:(void (^)(int, NSArray *))reply {
-    reply(self.controller.stopping ? 1 : 0, self.controller.stopping ? @[] : @[self.controller.accessory]);
+    id accessory = self.controller.accessory;
+    BOOL unavailable = self.controller.stopping || !accessory;
+    reply(unavailable ? 1 : 0, unavailable ? @[] : @[accessory]);
 }
 - (void)getBioLockoutStateForUser:(unsigned int)user client:(uint64_t)client replyBlock:(void (^)(int, uint64_t))reply {
     reply(user == 501 && !self.controller.stopping ? 0 : 1, NativeProviderDeviceReady);
@@ -312,13 +314,16 @@ static NSUUID *managedIdentityUUID(id identity) {
     reply(0);
     dispatch_group_async(controller.captureGroup, controller.captureQueue, ^{
         @autoreleasepool {
+            const double captureDeadline = capture_milliseconds() + capture_timeout_seconds * 1000.0;
             for (unsigned attempt = 0; attempt < 5 && !cancelled && !controller.stopping; attempt++) {
                 double began = capture_milliseconds();
-                ElanpressFeatures *features = capture(&sensor);
+                ElanpressFeatures *features = captureUntil(&sensor, captureDeadline);
                 printf("ELAN_PROVIDER capture_end client=%llu features=%u cancelled=%d elapsed_ms=%.0f\n",
                        client, features ? features->n : 0, cancelled, capture_milliseconds() - began);
                 if (!features) {
-                    if (!cancelled) { controller.stopping = YES; [self.connection invalidate]; }
+                    if (cancelled || controller.stopping || capture_last_result == ElanCaptureCancelled) break;
+                    if (capture_last_result == ElanCaptureImageRejected && attempt + 1 < 5) continue;
+                    controller.stopping = YES; [self.connection invalidate];
                     break;
                 }
                 unsigned score = 0;
@@ -328,6 +333,9 @@ static NSUUID *managedIdentityUUID(id identity) {
                 BOOL matched = score >= ELANPRESS_MATCH_MIN_PAIRS;
                 @synchronized (controller) {
                     if (cancelled || controller.stopping || controller.current != self || ![controller sessionIsCurrent]) break;
+                    if (capture_milliseconds() >= captureDeadline) {
+                        controller.stopping = YES; [self.connection invalidate]; break;
+                    }
                     if (!record || controller.matcher != matcher) { controller.stopping = YES; [self.connection invalidate]; break; }
                     uuid_t identityBytes; [record.uuid getUUIDBytes:identityBytes];
                     uint64_t sequence = ++controller.sequence;
@@ -646,7 +654,7 @@ int main(int argc, char **argv) {
                 if (background) memcpy(sensor.bg, background.bytes, background.length);
                 id accessory = [NSClassFromString(@"BiometricKitAccessory") new];
                 [accessory setValue:[[NSUUID alloc] initWithUUIDString:@"0D62A891-28A1-4818-A321-04F3000C1A01"] forKey:@"uuid"];
-                [accessory setValue:@1 forKey:@"type"]; [accessory setValue:@0 forKey:@"flags"];
+                [accessory setValue:@1 forKey:@"type"]; [accessory setValue:@2 forKey:@"flags"];
                 [accessory setValue:@"ELAN 0c1a" forKey:@"name"];
                 controller.accessory = accessory;
             }

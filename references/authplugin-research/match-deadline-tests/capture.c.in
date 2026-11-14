@@ -1,0 +1,44 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <time.h>
+#include "ElanCaptureEvents.h"
+typedef struct GSList {void*data;struct GSList*next;} GSList;
+typedef struct {int w,hgt,pid;unsigned short *bg;} Sensor;
+typedef struct {int x;} Key;
+typedef struct {unsigned n;Key*kp;} ElanpressFeatures;
+typedef struct {int x;} ElanpressTouchStats;
+static int cancelled,capture_last_result,reads,readyEvents,sampleEvents,rejectedEvents,failRead,cancelRead,cancelProcessing,lateProcessing,qualityBad;
+static double nowMs,readStep,processingMs;
+static unsigned capture_timeout_seconds=35;
+static int(*capture_should_cancel)(void);
+static void(*capture_observer)(ElanpressTouchStats*,int,int);
+#define ELANPRESS_MIN_QUALITY_STDDEV 10
+#define ELANPRESS_MATCH_MIN_PAIRS 10
+static double capture_milliseconds(void){return nowMs;}
+static void progress(const char*s){(void)s;}
+static void captureEvent(ElanCaptureEvent e){readyEvents+=e==ElanCaptureReady;sampleEvents+=e==ElanCaptureSampleReady;rejectedEvents+=e==ElanCaptureLowQuality;}
+static int frame(Sensor*s,unsigned short*t){reads++;nowMs+=readStep;if(cancelRead)cancelled=1;*t=reads%6>=5||reads%6==0;return !failRead;}
+static int elanpress_frame_has_touch(unsigned short*t,unsigned short*b,int z,ElanpressTouchStats*q){return *t;}
+static unsigned char*elanpress_process_frames(GSList*l,int n,unsigned short*b,int z){return calloc(z,1);}
+static double elanpress_image_quality(unsigned char*i,int z){return qualityBad?0:20;}
+static ElanpressFeatures*elanpress_image_features(unsigned char*i,int w,int h){nowMs+=processingMs;if(cancelProcessing)cancelled=1;ElanpressFeatures*f=calloc(1,sizeof(*f));f->n=20;f->kp=calloc(20,sizeof(Key));return f;}
+static void elanpress_features_free(ElanpressFeatures*f){free(f->kp);free(f);}
+
+/* CAPTURE_BODY */
+static void reset(void){cancelled=reads=readyEvents=sampleEvents=rejectedEvents=failRead=cancelRead=cancelProcessing=qualityBad=0;nowMs=0;readStep=100;processingMs=0;}
+int main(void){unsigned short bg=0;Sensor s={1,1,0x0c1a,&bg};ElanpressFeatures*f;
+reset();f=captureUntil(&s,35000);assert(!f&&capture_last_result==ElanCaptureImageRejected);puts("PASS short_touch_rejected");
+reset();readStep=250;f=captureUntil(&s,35000);assert(f&&capture_last_result==ElanCaptureSucceeded&&sampleEvents==1);elanpress_features_free(f);puts("PASS success");
+reset();readStep=250;qualityBad=1;double deadline=35000;int attempts=0;while(attempts++<5){f=captureUntil(&s,deadline);assert(!f);if(capture_last_result!=ElanCaptureImageRejected)break;}assert(attempts==6&&reads==30&&readyEvents==5&&sampleEvents==0);puts("PASS repeated_reject_requires_release");
+reset();nowMs=35000;f=captureUntil(&s,35000);assert(!f&&reads==0&&capture_last_result==ElanCaptureTimedOut);puts("PASS already_expired_no_io");
+reset();readStep=35001;f=captureUntil(&s,35000);assert(!f&&reads==1&&capture_last_result==ElanCaptureTimedOut);puts("PASS late_read_no_processing");
+reset();readStep=250;processingMs=35000;f=captureUntil(&s,35000);assert(!f&&capture_last_result==ElanCaptureTimedOut&&sampleEvents==0);puts("PASS late_success_discarded");
+reset();readStep=250;cancelProcessing=1;f=captureUntil(&s,35000);assert(!f&&capture_last_result==ElanCaptureCancelled&&sampleEvents==0);puts("PASS cancel_processing_discarded");
+reset();cancelRead=1;f=captureUntil(&s,35000);assert(!f&&reads==1&&capture_last_result==ElanCaptureCancelled);puts("PASS cancel_read");
+reset();failRead=1;f=captureUntil(&s,35000);assert(!f&&capture_last_result==ElanCaptureDeviceError);puts("PASS io_failure");
+reset();failRead=1;readStep=35001;f=captureUntil(&s,35000);assert(!f&&capture_last_result==ElanCaptureDeviceError);puts("PASS late_io_failure_not_timeout");
+reset();readStep=250;qualityBad=1;for(int i=0;i<5;i++){f=captureUntil(&s,4000);assert(!f);if(capture_last_result==ElanCaptureTimedOut)break;}assert(nowMs==4000&&reads==16&&capture_last_result==ElanCaptureTimedOut);puts("PASS shared_budget_not_reset");
+reset();capture_timeout_seconds=0;f=captureWithReader(&s,frame);assert(!f&&reads==0&&capture_last_result==ElanCaptureTimedOut);puts("PASS compatible_reader_wrapper");
+reset();capture_timeout_seconds=35;readStep=250;f=capture(&s);assert(f);elanpress_features_free(f);puts("PASS compatible_capture_wrapper");return 0;}

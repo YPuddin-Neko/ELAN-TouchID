@@ -170,7 +170,7 @@ static unsigned char *stable_image(GSList *frames, int count, Sensor *s, double 
     return elanpress_process_frames(&first, 3, s->bg, s->w * s->hgt);
 }
 
-static ElanpressFeatures *captureWithReader(Sensor *s, int (*readFrame)(Sensor *, unsigned short *)) {
+static ElanpressFeatures *captureWithReaderUntil(Sensor *s, int (*readFrame)(Sensor *, unsigned short *), double deadline) {
     int size = s->w * s->hgt;
     unsigned short *tmp = calloc(size, sizeof(*tmp));
     GSList *list = NULL;
@@ -178,15 +178,18 @@ static ElanpressFeatures *captureWithReader(Sensor *s, int (*readFrame)(Sensor *
     int singlePress = s->pid == 0x0c1a;
     int frameCount = singlePress ? 1 : 10;
     double landed = 0, processing = 0;
-    time_t deadline = time(NULL) + capture_timeout_seconds;
     ElanpressFeatures *features = NULL;
     capture_last_result = ElanCapturePending;
     if (!tmp) { capture_last_result = ElanCaptureAllocationError; return NULL; }
     progress("请先松开手指，等待采集提示。");
     captureEvent(ElanCaptureAwaitRelease);
-    while (!cancelled && time(NULL) < deadline) {
+    while (!cancelled && capture_milliseconds() < deadline) {
         if(capture_should_cancel && capture_should_cancel()) { capture_last_result = ElanCaptureCancelled; break; }
         if (!readFrame(s, tmp)) { capture_last_result = cancelled ? ElanCaptureCancelled : ElanCaptureDeviceError; break; }
+        if (cancelled || (capture_should_cancel && capture_should_cancel())) {
+            capture_last_result = ElanCaptureCancelled; break;
+        }
+        if (capture_milliseconds() >= deadline) { capture_last_result = ElanCaptureTimedOut; break; }
         ElanpressTouchStats stats;
         int touched = elanpress_frame_has_touch(tmp, s->bg, size, &stats);
         if(capture_observer) capture_observer(&stats,touched,clear);
@@ -235,7 +238,14 @@ static ElanpressFeatures *captureWithReader(Sensor *s, int (*readFrame)(Sensor *
                    s->w, s->hgt, quality, n, features ? features->n : 0);
             printf("CAPTURE pid=%04x frames=%d hold_ms=%.0f process_ms=%.1f\n",
                    s->pid,n,processing-landed,capture_milliseconds()-processing);
-            if (quality < ELANPRESS_MIN_QUALITY_STDDEV || !features ||
+            if (cancelled || (capture_should_cancel && capture_should_cancel()) || capture_milliseconds() >= deadline) {
+                if (features) {
+                    memset(features->kp, 0, features->n * sizeof(*features->kp));
+                    elanpress_features_free(features); features = NULL;
+                }
+                capture_last_result = cancelled || (capture_should_cancel && capture_should_cancel())
+                    ? ElanCaptureCancelled : ElanCaptureTimedOut;
+            } else if (quality < ELANPRESS_MIN_QUALITY_STDDEV || !features ||
                 features->n < ELANPRESS_MATCH_MIN_PAIRS) {
                 if (features) elanpress_features_free(features);
                 features = NULL;
@@ -261,11 +271,21 @@ static ElanpressFeatures *captureWithReader(Sensor *s, int (*readFrame)(Sensor *
     }
     memset(tmp, 0, size * sizeof(*tmp));
     free(tmp);
-    if (cancelled) capture_last_result = ElanCaptureCancelled;
-    else if (capture_last_result == ElanCapturePending) capture_last_result = ElanCaptureTimedOut;
+    if (cancelled || (capture_should_cancel && capture_should_cancel())) capture_last_result = ElanCaptureCancelled;
+    else if (capture_last_result == ElanCapturePending ||
+             ((capture_last_result == ElanCaptureSucceeded || capture_last_result == ElanCaptureImageRejected) &&
+              capture_milliseconds() >= deadline)) capture_last_result = ElanCaptureTimedOut;
+    if (features && capture_last_result != ElanCaptureSucceeded) {
+        memset(features->kp, 0, features->n * sizeof(*features->kp));
+        elanpress_features_free(features); features = NULL;
+    }
     return features;
 }
 
+static ElanpressFeatures *captureWithReader(Sensor *s, int (*readFrame)(Sensor *, unsigned short *)) {
+    return captureWithReaderUntil(s, readFrame, capture_milliseconds() + capture_timeout_seconds * 1000.0);
+}
+static ElanpressFeatures *captureUntil(Sensor *s, double deadline) { return captureWithReaderUntil(s, frame, deadline); }
 static ElanpressFeatures *capture(Sensor *s) { return captureWithReader(s, frame); }
 static unsigned match(ElanpressFeatures*f,ElanpressFeatures**templates,int n){unsigned best=0;for(int i=0;i<n;i++){unsigned score=elanpress_match_features(f,templates[i]);if(score>best)best=score;}return best;}
 static int pause_prompt(const char*msg){puts(msg);fflush(stdout);int c;do{c=getchar();if(c==EOF)return 0;}while(c!='\n');return !cancelled;}

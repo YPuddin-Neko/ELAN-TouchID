@@ -1,0 +1,31 @@
+#import <Foundation/Foundation.h>
+#include <assert.h>
+typedef enum {ElanCaptureSucceeded,ElanCaptureImageRejected,ElanCaptureTimedOut,ElanCaptureDeviceError,ElanCaptureAllocationError,ElanCaptureCancelled,TestControllerStopped} Result;
+typedef struct {unsigned n;} ElanpressFeatures;
+static int cancelled,capture_last_result,calls,successful,sensor;static Result seq[8];static int count;
+@interface Connection:NSObject
+@property int invalidations;
+-(void)invalidate;
+@end
+@implementation Connection
+-(void)invalidate {self.invalidations++;}
+@end
+@interface Controller:NSObject
+@property BOOL stopping;
+@end
+@implementation Controller
+@end
+static Controller *active;
+static double testClock;static unsigned capture_timeout_seconds=35;static double capture_milliseconds(void){return testClock;}
+static ElanpressFeatures *captureUntil(int *s,double deadline){assert(deadline==35000);testClock+=1000;static ElanpressFeatures f={20};assert(calls<count);Result x=seq[calls++];capture_last_result=x;if(x==ElanCaptureCancelled)cancelled=1;if(x==TestControllerStopped)active.stopping=YES;return x==ElanCaptureSucceeded?&f:NULL;}
+@interface Runner:NSObject
+@property Connection *connection;
+-(void)check:(Controller*)controller matching:(double)matching lockWait:(double)lockWait;
+@end
+@implementation Runner
+-(void)check:(Controller*)controller matching:(double)matching lockWait:(double)lockWait {const double captureDeadline=35000;testClock=1000;testClock+=matching;testClock+=lockWait;do {
+/* POST_MATCH_GUARD */
+successful++;
+}while(0);}
+@end
+int main(void){@autoreleasepool{double delays[][2]={{100,100},{34000,0},{0,34000},{20000,14000},{20000,13999}};for(int i=0;i<5;i++){successful=0;Runner*r=[Runner new];r.connection=[Connection new];Controller*c=[Controller new];[r check:c matching:delays[i][0] lockWait:delays[i][1]];BOOL pass=i==0||i==4;assert(successful==pass);assert(r.connection.invalidations==!pass);printf("PASS post_match_lock_case_%d broker_allowed=%d\n",i,successful);}return 0;}}
