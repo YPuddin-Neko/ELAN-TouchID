@@ -2,6 +2,8 @@
 #include <libproc.h>
 #include <sys/proc.h>
 #include <fcntl.h>
+#include <errno.h>
+#include "native-executable-slice.h"
 #include <mach/vm_prot.h>
 
 static constexpr const char *SettingsExecutable = "/System/Library/ExtensionKit/Extensions/Touch ID & Password.appex/Contents/MacOS/Touch ID & Password";
@@ -24,15 +26,53 @@ static bool settingsIdentity(pid_t pid, SettingsTarget &target, uint32_t *proces
     if (processState) *processState = info.pbi_status;
     return true;
 }
-static uint64_t executableMapping(pid_t pid, const char *path) {
+struct ExecutableMappingDiagnostics {
+    unsigned regions = 0, pathMatches = 0, headerMatches = 0;
+    int queryBytes = 0, queryError = 0;
+    const char *outcome = "limit";
+};
+static uint64_t executableMapping(pid_t pid, const char *path, ExecutableMappingDiagnostics *diagnostics = nullptr) {
+    ExecutableMappingDiagnostics local {};
+    auto &trace = diagnostics ? *diagnostics : local;
+    trace = {};
+#if defined(__x86_64__)
+    constexpr uint32_t nativeCPU = 0x01000007;
+#elif defined(__arm64__)
+    constexpr uint32_t nativeCPU = 0x0100000c;
+#else
+#error Unsupported settings broker architecture
+#endif
+    int image = open(path, O_RDONLY | O_NOFOLLOW);
+    struct stat imageInfo {};
+    uint64_t sliceOffset = 0;
+    bool parsed = image >= 0 && !fstat(image, &imageInfo) && S_ISREG(imageInfo.st_mode) && imageInfo.st_size >= 0 &&
+        nativeExecutableSlice(uint64_t(imageInfo.st_size), nativeCPU,
+            [&](uint64_t at, void *bytes, size_t size) {
+                return pread(image, bytes, size, static_cast<off_t>(at)) == static_cast<ssize_t>(size);
+            }, sliceOffset);
+    if (image >= 0) close(image);
+    if (!parsed) { trace.outcome = "image_rejected"; return 0; }
     uint64_t address = 0;
     for (unsigned index = 0; index < 4096; index++) {
         proc_regionwithpathinfo info {};
-        if (proc_pidinfo(pid, PROC_PIDREGIONPATHINFO, address, &info, sizeof(info)) != sizeof(info)) return 0;
+        errno = 0;
+        trace.queryBytes = proc_pidinfo(pid, PROC_PIDREGIONPATHINFO, address, &info, sizeof(info));
+        trace.queryError = errno;
+        if (trace.queryBytes != sizeof(info)) { trace.outcome = "query_failed"; return 0; }
+        trace.regions++;
         const auto &region = info.prp_prinfo;
-        if (!strcmp(info.prp_vip.vip_path, path) && !region.pri_offset && (region.pri_protection & VM_PROT_EXECUTE))
-            return region.pri_address;
-        if (!region.pri_size || region.pri_address > UINT64_MAX - region.pri_size || region.pri_address + region.pri_size <= address) return 0;
+        if (!strcmp(info.prp_vip.vip_path, path)) {
+            trace.pathMatches++;
+            if (region.pri_offset == sliceOffset) {
+                trace.headerMatches++;
+                if (region.pri_protection & VM_PROT_EXECUTE) {
+                    trace.outcome = "found"; return region.pri_address;
+                }
+            }
+        }
+        if (!region.pri_size || region.pri_address > UINT64_MAX - region.pri_size || region.pri_address + region.pri_size <= address) {
+            trace.outcome = "invalid_region"; return 0;
+        }
         address = region.pri_address + region.pri_size;
     }
     return 0;

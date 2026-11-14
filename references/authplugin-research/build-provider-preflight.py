@@ -37,6 +37,11 @@ run(["xcrun", "clang++", "-std=c++14", "-arch", "x86_64", "-mmacosx-version-min=
      "-framework", "Security", "-framework", "IOKit", "-framework", "SystemConfiguration", "-o", broker], "broker-build.log")
 run(["codesign", "--force", "--sign", "-", "--options", "runtime", broker], "broker-sign.log")
 run(["codesign", "--verify", "--strict", broker], "broker-verify.log")
+slice_test = out / "test-executable-slice"
+run(["xcrun", "clang++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
+     "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
+     source / "test-native-executable-slice.cpp", "-o", slice_test], "executable-slice-build.log")
+run([slice_test], "executable-slice-tests.log")
 wire_sources = [source / "test-native-provider-wire.cpp", source / "native-provider-client.cpp"]
 wire_host = out / "test-provider-wire"
 run(["xcrun", "clang++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
@@ -94,6 +99,7 @@ manifest["lac_own_process_lifecycle_probe_prepared"] = True
 manifest["system_process_retry_reset_deployed"] = False
 manifest["catalog_and_enrollment_wire_host_tests_passed"] = True
 manifest["settings_wire_host_tests_passed"] = True
+manifest["executable_slice_host_tests_passed"] = True
 manifest["settings_session_host_tests_passed"] = True
 manifest["settings_process_control_prepared"] = True
 manifest["settings_system_process_modified"] = False
