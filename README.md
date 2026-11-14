@@ -16,11 +16,7 @@ ELAN USB 指纹模块的 macOS 适配与原生认证接口研究，主要面向 
 
 因此原生打包、部署、恢复流程及依赖 `native-provider-deployment.py` / `manage-efi.py` 的测试不能在此公开快照中完整运行。不要直接使用此快照修改系统认证或 EFI。用户名、目标 UID 和平台版本相关假设尚需在通用部署流程中解决。
 
-可单独运行不依赖部署模块的会话生命周期测试：
-
-```sh
-python3 references/authplugin-research/test_native_session_lifecycle.py
-```
+本机完整工作区的会话生命周期测试为 33/33 通过。该测试也导入已排除的部署模块，所以公开快照中无法运行；公开快照已单独完成 16 个 Python 文件的语法检查，未完成完整构建、硬件验证或部署测试。
 
 ## 来源与许可证
 
