@@ -1,0 +1,26 @@
+# Local evidence, biometric material, packages, and generated output
+/evidence/
+**/.git/
+**/build/
+**/dist/
+**/__pycache__/
+*.pyc
+.DS_Store
+*.log
+*.dSYM/
+*.key
+*.pem
+*.p12
+.env
+.env.*
+# Historical audit applies only to the upstream snapshot
+/elan-fingerprint-macos/PRIVACY-AUDIT.json
+# Machine-specific deployment and recovery scripts remain local
+/references/authplugin-research/restore-native-access.py
+/references/authplugin-research/restore-native-access.command
+/references/authplugin-research/native-provider-deployment.py
+/references/authplugin-research/kernel-provider/manage-efi.py
+/references/authplugin-research/kernel-provider/remove-credential-study.command
+/references/authplugin-research/kernel-provider/inspect-loaded.command
+/references/authplugin-research/kernel-provider/run-kernel-study.command
+/references/authplugin-research/kernel-provider/run-credential-study.command
