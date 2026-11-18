@@ -389,7 +389,7 @@ class PackageTests(unittest.TestCase):
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.source = self.root / 'references/authplugin-research'
         self.source.mkdir(parents=True)
-        self.build = self.root / 'elan-fingerprint-macos/build/research'
+        self.build = self.root / 'build/research'
         self.package = self.build / 'native-provider-package-06'
         self.d = load_deployment()
         for name in ['package-native-provider.py', 'native-provider-deployment.py', 'native-session-lifecycle.py', *HELPERS]:

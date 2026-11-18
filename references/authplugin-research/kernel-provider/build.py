@@ -13,7 +13,7 @@ SOURCE = Path(__file__).resolve().parent
 ROOT = SOURCE.parents[2]
 SDK = ROOT.parent / 'MacKernelSDK'
 LILU = ROOT.parent / 'build/bluetooth/IntelBluetoothFirmware-a414375505fa3b014be32f8fca31b5bbfdf9f10f/Lilu.kext/Contents/Resources'
-OUT = ROOT / 'elan-fingerprint-macos/build/research/native-kernel-authorization-015'
+OUT = ROOT / 'build/research/native-kernel-authorization-015'
 NAME = 'ELANNativeProbe'
 IDENTIFIER = 'io.github.hackintosh-tools.elan-native-probe'
 VERSION = '0.6.0'
@@ -53,7 +53,7 @@ def main(argv=None):
         parser.error('--service-home requires --automatic-settings and an absolute /Users/<account> path')
     SDK, LILU, OUT = args.sdk.resolve(), args.lilu.resolve(), args.out.resolve()
 
-    if args.enrollment_service and args.out == ROOT / 'elan-fingerprint-macos/build/research/native-kernel-authorization-015':
+    if args.enrollment_service and args.out == ROOT / 'build/research/native-kernel-authorization-015':
         OUT = OUT.with_name('native-kernel-direct-enrollment')
     version = '0.6.1' if args.enrollment_service else VERSION
     bundle_name = 'ELANNativeProbeDirectEnrollment' if args.enrollment_service else BUNDLE_NAME

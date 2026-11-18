@@ -13,8 +13,16 @@
 *.p12
 .env
 .env.*
-# Historical audit applies only to the upstream snapshot
-/elan-fingerprint-macos/PRIVACY-AUDIT.json
+# Historical audit and external reference directories remain local
+/elan-fingerprint-macos/
+/references/libfprint-elan.c
+/references/libfprint-elan.h
+/references/authplugin-research/build-credential-probe.sh
+/references/authplugin-research/build-elan-biometric-probe.sh
+/references/authplugin-research/build-elan-credential-probe.sh
+/references/authplugin-research/build-native-probe.sh
+/references/authplugin-research/native-elan-biometric-probe.m
+/references/authplugin-research/native-elan-credential-probe.m
 # Machine-specific deployment and recovery scripts remain local
 /references/authplugin-research/restore-native-access.py
 /references/authplugin-research/restore-native-access.command

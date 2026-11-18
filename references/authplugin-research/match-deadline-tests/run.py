@@ -18,10 +18,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['all', 'native', 'x86', 'sanitizer'], default='all')
     args = parser.parse_args()
-    capture = (ROOT / 'elan-fingerprint-macos/src/elan_match_test.c').read_text()
+    capture = (ROOT / 'src/elan_match_test.c').read_text()
     provider = (HERE.parent / 'native-elan-provider.m').read_text()
     bodies = {
-        'capture': extract(capture, 'static ElanpressFeatures *captureWithReaderUntil(', 'static unsigned match('),
+        'capture': extract(capture, 'static ElanpressFeatures *captureWithReaderOptionsUntil(', 'static unsigned match('),
         'provider': extract(provider, '            const double captureDeadline =', '                unsigned score = 0;'),
         'post-match': extract(provider, '                    if (capture_milliseconds() >= captureDeadline)', '                    if (!record'),
     }
@@ -42,7 +42,7 @@ def main():
             source.write_text(template.replace(marker, bodies[name]))
             for mode, flags in selected.items():
                 binary = work / f'{name}-{mode}'
-                cmd = ['xcrun', 'clang', '-O1', *flags, '-I' + str(ROOT / 'elan-fingerprint-macos/src')]
+                cmd = ['xcrun', 'clang', '-O1', *flags, '-I' + str(ROOT / 'src')]
                 if extension == 'm':
                     cmd += ['-fobjc-arc', '-framework', 'Foundation']
                 subprocess.run([*cmd, str(source), '-o', str(binary)], check=True, timeout=60)

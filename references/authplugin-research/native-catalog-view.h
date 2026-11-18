@@ -1,5 +1,5 @@
 #pragma once
-#import "../../elan-fingerprint-macos/src/ElanFingerprintCatalog.h"
+#import "../../src/ElanFingerprintCatalog.h"
 
 static id nativeIdentityForRecord(ElanFingerprintRecord *record, unsigned user) {
     if (!record) return nil;

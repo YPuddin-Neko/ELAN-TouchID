@@ -33,7 +33,7 @@ def release(version):
 
 
 def real_releases():
-    build = HERE.parents[1] / 'elan-fingerprint-macos/build/research'
+    build = HERE.parents[1] / 'build/research'
     releases = {}
     for version, package, label in [('0.4.0', 'settings-kernel-diagnostic-041-r2', 'original'),
                                     ('0.4.1', 'settings-kernel-diagnostic-041-r2', 'candidate'),

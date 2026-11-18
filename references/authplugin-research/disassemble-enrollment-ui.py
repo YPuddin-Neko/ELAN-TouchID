@@ -13,7 +13,7 @@ evidence = root / "evidence/elan-0c1a/native-ecosystem-01"
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--source", type=Path, default=evidence / "native-enrollment-ui-code.json")
 parser.add_argument("--output", type=Path, default=evidence / "native-enrollment-ui-disassembly.txt")
-parser.add_argument("--objects", type=Path, default=root / "elan-fingerprint-macos/build/research/native-ecosystem-01/ui-code")
+parser.add_argument("--objects", type=Path, default=root / "build/research/native-ecosystem-01/ui-code")
 args = parser.parse_args()
 source = json.loads(args.source.read_text())
 out = args.objects

@@ -1,5 +1,5 @@
-#import "../../elan-fingerprint-macos/src/ElanFingerprintCatalog.h"
-#import "../../elan-fingerprint-macos/src/ElanTemplateFormat.h"
+#import "../../src/ElanFingerprintCatalog.h"
+#import "../../src/ElanTemplateFormat.h"
 
 #define REQUIRE(condition) do { if (!(condition)) { fprintf(stderr, "CATALOG_FAIL line=%d expression=%s\n", __LINE__, #condition); return 1; } } while (0)
 

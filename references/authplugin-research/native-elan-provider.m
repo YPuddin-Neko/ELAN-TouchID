@@ -16,8 +16,8 @@
 #include "native-provider-interface.h"
 #include "native-catalog-view.h"
 #include "native-provider-peer.h"
-#import "../../elan-fingerprint-macos/src/ElanFingerprintSession.h"
-#import "../../elan-fingerprint-macos/src/ElanFingerprintEnrollment.h"
+#import "../../src/ElanFingerprintSession.h"
+#import "../../src/ElanFingerprintEnrollment.h"
 #include "native-enrollment-progress.h"
 #include "native-enrollment-request.h"
 #ifdef ELAN_SENSOR_SERVICE_BACKEND
@@ -26,10 +26,10 @@
 #endif
 #include "native-protected-configuration.h"
 #define main elan_diagnostic_main
-#include "../../elan-fingerprint-macos/src/elan_match_test.c"
+#include "../../src/elan_match_test.c"
 #undef main
-#include "../../elan-fingerprint-macos/src/ElanFingerprintStore.inc"
-#include "../../elan-fingerprint-macos/src/ElanEnrollmentCapture.inc"
+#include "../../src/ElanFingerprintStore.inc"
+#include "../../src/ElanEnrollmentCapture.inc"
 #include "test-enrollment-capture.inc"
 #define ELAN_NATIVE_CAPTURE_SAMPLE(s, alreadyClear) captureAfterRelease((s), (alreadyClear))
 #define ELAN_NATIVE_ENROLL_LOG(fmt, ...) os_log_error(OS_LOG_DEFAULT, fmt, ##__VA_ARGS__)

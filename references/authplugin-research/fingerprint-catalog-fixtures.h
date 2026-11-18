@@ -1,5 +1,5 @@
 #pragma once
-#import "../../elan-fingerprint-macos/src/ElanTemplateFormat.h"
+#import "../../src/ElanTemplateFormat.h"
 
 static NSData *fixtureTemplate(unsigned schema, unsigned pid, unsigned width, unsigned height, unsigned samples) {
     ElanpressKeypoint points[ELANPRESS_MATCH_MIN_PAIRS] = {};

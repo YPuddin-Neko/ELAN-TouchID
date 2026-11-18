@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 source = Path(__file__).resolve().parent
-build = source.parents[1] / 'elan-fingerprint-macos/build/research'
+build = source.parents[1] / 'build/research'
 package = build / 'native-provider-package-06'
 package.mkdir()
 spec = importlib.util.spec_from_file_location('deployment', source / 'native-provider-deployment.py')

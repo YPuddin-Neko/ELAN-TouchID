@@ -1,3 +1,0 @@
-[codespell]
-skip = strerror.c,AUTHORS,config.guess,libtool,XCBuildData,autom4te.cache,ltmain.sh
-ignore-words-list = numer,ser,xwindows,maked,pre-emptively

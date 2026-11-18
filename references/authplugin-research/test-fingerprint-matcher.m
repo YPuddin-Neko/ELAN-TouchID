@@ -1,5 +1,5 @@
-#import "../../elan-fingerprint-macos/src/ElanFingerprintMatcher.h"
-#import "../../elan-fingerprint-macos/src/ElanTemplateFormat.h"
+#import "../../src/ElanFingerprintMatcher.h"
+#import "../../src/ElanTemplateFormat.h"
 
 #define REQUIRE(condition) do { if (!(condition)) { fprintf(stderr, "MULTIFINGER_FAIL line=%d expression=%s\n", __LINE__, #condition); return 1; } } while (0)
 

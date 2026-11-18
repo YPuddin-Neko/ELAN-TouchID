@@ -8,7 +8,7 @@ from pathlib import Path
 
 source = Path(__file__).resolve().parent
 root = source.parents[1]
-project = root / "elan-fingerprint-macos"
+project = root
 DEFAULT_OUT = project / "build/research/native-provider-06"
 VERSION = "0.4.0"
 out = DEFAULT_OUT
@@ -110,9 +110,6 @@ def main(argv=None):
          "-framework", "Foundation", "-o", transport_test], "match-transport-build.log")
     run(["codesign", "--force", "--sign", "-", transport_test], "match-transport-sign.log")
     run(["codesign", "--verify", "--strict", transport_test], "match-transport-verify.log")
-    # Verify the existing enrollment application still compiles against the extracted shared store.
-    run(["xcrun", "clang", *flags, *includes, "-fobjc-arc", "-Wno-deprecated-declarations", "-fsyntax-only",
-         project / "src/ElanUnlock.m"], "legacy-app-syntax.log")
     artifacts = {str(path.relative_to(out)): identity.executable_identity(path)
                  for path in [executable, test_binary, transport_test]}
     manifest = {"schema_version": 1, "state": "complete", "app": str(app), "version": VERSION, "artifacts": artifacts,

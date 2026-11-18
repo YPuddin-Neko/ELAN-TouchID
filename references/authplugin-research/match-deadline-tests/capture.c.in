@@ -8,7 +8,7 @@ typedef struct GSList {void*data;struct GSList*next;} GSList;
 typedef struct {int w,hgt,pid;unsigned short *bg;} Sensor;
 typedef struct {int x;} Key;
 typedef struct {unsigned n;Key*kp;} ElanpressFeatures;
-typedef struct {int x;} ElanpressTouchStats;
+typedef struct {int x;double coverage;} ElanpressTouchStats;
 static int cancelled,capture_last_result,reads,readyEvents,sampleEvents,rejectedEvents,failRead,cancelRead,cancelProcessing,lateProcessing,qualityBad;
 static double nowMs,readStep,processingMs;
 static unsigned capture_timeout_seconds=35;
