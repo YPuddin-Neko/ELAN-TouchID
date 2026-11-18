@@ -1,13 +1,6 @@
 # ELAN-TouchID
 
-ELAN USB 指纹传感器（`04f3:0c1a`）的 macOS 触控 ID 驱动，接入「系统设置 → 触控 ID 与密码」、`LocalAuthentication` 与 `loginwindow`。
-
-## 功能
-
-- **系统设置管理**：在「系统设置 → 触控 ID 与密码」中添加、重命名和删除指纹（最多 3 枚）。
-- **功能开关**：支持「使用触控 ID 解锁 Mac」「将触控 ID 用于 Apple Pay」「将触控 ID 用于 iTunes Store、App Store 和 Apple Books」「将触控 ID 用于自动填充密码」「将触控 ID 用于快速用户切换」。
-- **系统与应用认证**：支持 `密码.app`、Safari 密码自动填充及系统 `LocalAuthentication` 触控 ID 验证。
-- **锁屏解锁**：锁屏状态下按压指纹完成验证并解锁桌面、登录钥匙串与系统密钥袋。
+为无 T2 芯片的 Intel 黑苹果实现 ELAN USB 指纹传感器（`04f3:0c1a`）的 macOS 原生触控 ID 驱动栈，打通 `BiometricKit`、`AppleCredentialManager`、`LocalAuthentication` 与 `loginwindow`。
 
 ## 适用环境
 
@@ -17,12 +10,14 @@ ELAN USB 指纹传感器（`04f3:0c1a`）的 macOS 触控 ID 驱动，接入「�
 
 无 T2 芯片的 Intel 平台不含硬件安全隔区（SEP），不支持 FileVault 预启动解锁，冷启动首次登录需输入密码。
 
-## 组件
+## 实现机制
 
-1. **`ELANNativeProbeAutomaticSettings.kext`**
-   放入 `EFI/OC/Kexts/` 并在 OpenCore `config.plist` 中排在 `Lilu.kext` 之后启用。负责桥接系统设置与 `coreauthd` 的 `BiometricKit` 连接、校验凭证上下文及提交锁屏解锁按键。
-2. **`ELANSensorService`**
-   由用户级 `LaunchAgent`（`~/Library/LaunchAgents/io.github.hackintosh-tools.elan-usb.plist`）随登录启动。负责 USB 图像采集、特征提取与指纹比对。
+- **`BiometricKit` 虚拟设备与内核凭证桥接（`ELANNativeProbeAutomaticSettings.kext`）**：
+  基于 Lilu 在内核态识别 `TouchIDPasswordExtension` 与 `coreauthd` 进程，重定向 `BiometricKit` XPC 服务连接并切换平台生物识别可用性缓存；通过 `IOUserClient` 与内核 `AppleCredentialManager` 同步生物识别可用状态、已注册身份目录及实时匹配结果，使系统原生「触控 ID 与密码」设置面板、`密码.app`、Safari 自动填充及 `LocalAuthentication` 直接调用该传感器。
+- **USB 图像采集与 SIFT 特征匹配服务（`ELANSensorService`）**：
+  通过 `libusb` 驱动 `04f3:0c1a` 传感器完成 144 × 64 原始帧读取与背景消减，使用 `elanpress` SIFT 局部特征点提取与几何一致性算法完成多阶段指纹录入与比对，实现 `BiometricKitXpcProtocol` 的录入、身份管理、受保护配置读写与 `coreauthd` 匹配回调。
+- **内核态凭证捕获与 `IOHIKeyboard` 锁屏解锁**：
+  在系统设置校验管理员密码时从 `AppleCredentialManager` 捕获并经 OpenDirectory 核验解锁凭证；锁屏状态下完成指纹特征匹配后，通过内核 `IOHIKeyboard::dispatchKeyboardEvent` 直接向 `IOHIDSystem` 派发硬件级按键事件，由 `loginwindow` 完成屏幕、登录钥匙串与系统密钥袋解锁。
 
 ## 编译构建
 
