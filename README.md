@@ -1,30 +1,28 @@
 # ELAN-TouchID
 
-ELAN USB 指纹传感器（`04f3:0c1a`）的 macOS 原生触控 ID 驱动方案。通过内核扩展与后台守护服务直接接入 macOS 原生「系统设置 → 触控 ID 与密码」，**无需安装任何独立图形客户端（`.app`），也无需手动开启辅助功能权限**，安装驱动后即可开箱使用。
+ELAN USB 指纹传感器（`04f3:0c1a`）的 macOS 触控 ID 驱动，接入「系统设置 → 触控 ID 与密码」、`LocalAuthentication` 与 `loginwindow`。
 
-## 支持功能
+## 功能
 
-- **原生系统设置录入与管理**：直接在「系统设置 → 触控 ID 与密码」中添加、重命名和删除指纹（最多支持 3 枚）。
-- **触控 ID 功能开关**：支持「使用触控 ID 解锁 Mac」「将触控 ID 用于 Apple Pay」「将触控 ID 用于 iTunes Store、App Store 和 Apple Books」「将触控 ID 用于自动填充密码」「将触控 ID 用于快速用户切换」。
-- **系统与应用身份认证**：支持 `密码.app`、Safari 密码自动填充及系统 `LocalAuthentication` 触控 ID 验证。
-- **锁屏指纹解锁**：锁屏状态下按压指纹即可完成认证并解锁进入桌面，自动同步解锁登录钥匙串与系统密钥袋。
+- **系统设置管理**：在「系统设置 → 触控 ID 与密码」中添加、重命名和删除指纹（最多 3 枚）。
+- **功能开关**：支持「使用触控 ID 解锁 Mac」「将触控 ID 用于 Apple Pay」「将触控 ID 用于 iTunes Store、App Store 和 Apple Books」「将触控 ID 用于自动填充密码」「将触控 ID 用于快速用户切换」。
+- **系统与应用认证**：支持 `密码.app`、Safari 密码自动填充及系统 `LocalAuthentication` 触控 ID 验证。
+- **锁屏解锁**：锁屏状态下按压指纹完成验证并解锁桌面、登录钥匙串与系统密钥袋。
 
 ## 适用环境
 
-- **指纹硬件**：ELAN USB 指纹模块（`VID: 0x04f3`，`PID: 0x0c1a`，分辨率 144 × 64）
+- **指纹硬件**：ELAN USB 指纹模块（`VID: 0x04f3`，`PID: 0x0c1a`，144 × 64）
 - **操作系统**：macOS Sequoia 15.8.1（Build `24H32`，Intel `x86_64`）
-- **引导环境**：OpenCore（需加载 `Lilu.kext`）
+- **引导环境**：OpenCore + `Lilu.kext`
 
-> **说明**：无 T2 芯片的 Intel 平台没有硬件安全隔区（SEP），因此不支持 FileVault 预启动解锁，开机首次冷启动登录仍需输入密码；进入系统后的锁屏唤醒、应用解锁与自动填充均可直接使用指纹。
+无 T2 芯片的 Intel 平台不含硬件安全隔区（SEP），不支持 FileVault 预启动解锁，冷启动首次登录需输入密码。
 
-## 组件构成与安装
+## 组件
 
-运行环境仅包含以下两个组件，不依赖任何第三方客户端应用：
-
-1. **内核扩展 `ELANNativeProbeAutomaticSettings.kext`**
-   放入 `EFI/OC/Kexts/` 并在 OpenCore `config.plist` 中排在 `Lilu.kext` 之后启用。负责将系统设置与 `coreauthd` 的 `BiometricKit` 请求桥接至后台服务，并在内核态处理凭证校验与锁屏按键提交。
-2. **后台传感器服务 `ELANSensorService`**
-   由用户级 `LaunchAgent`（`~/Library/LaunchAgents/io.github.hackintosh-tools.elan-usb.plist`）随登录自动启动。负责通过 USB 采集指纹图像、提取特征并执行比对。
+1. **`ELANNativeProbeAutomaticSettings.kext`**
+   放入 `EFI/OC/Kexts/` 并在 OpenCore `config.plist` 中排在 `Lilu.kext` 之后启用。负责桥接系统设置与 `coreauthd` 的 `BiometricKit` 连接、校验凭证上下文及提交锁屏解锁按键。
+2. **`ELANSensorService`**
+   由用户级 `LaunchAgent`（`~/Library/LaunchAgents/io.github.hackintosh-tools.elan-usb.plist`）随登录启动。负责 USB 图像采集、特征提取与指纹比对。
 
 ## 编译构建
 

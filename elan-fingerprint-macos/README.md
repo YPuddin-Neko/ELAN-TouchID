@@ -1,8 +1,6 @@
-# ELAN Fingerprint 核心采集与匹配库
+# ELAN Fingerprint 采集与匹配库
 
-本目录提供 ELAN USB 指纹传感器（`04f3:0c1a` 144 × 64、`04f3:0c6e` 150 × 52）的用户态 USB 通信、图像背景消减、`elanpress` SIFT 局部特征提取/几何一致性比对，以及指纹模板目录序列化实现。
-
-在当前原生触控 ID 方案中，`ELANSensorService` 直接静态链接本目录下的 `vendor/libusb`、`vendor/elanpress` 与 `src/ElanFingerprint{Catalog,Matcher,Session,Enrollment}.m`，无需编译或安装本目录早期的独立图形程序（`ELANFingerprint.app`）。
+本目录实现 ELAN USB 指纹传感器（`04f3:0c1a` 144 × 64、`04f3:0c6e` 150 × 52）的用户态 USB 通信、图像背景消减、`elanpress` SIFT 局部特征提取/几何一致性比对，以及指纹模板目录序列化。
 
 ## 模块说明
 
