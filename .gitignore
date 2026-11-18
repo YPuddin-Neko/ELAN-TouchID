@@ -26,6 +26,7 @@
 /references/authplugin-research/kernel-provider/run-credential-study.command
 /references/authplugin-research/usb-sensor/install-automatic-settings.py
 /references/authplugin-research/usb-sensor/检查原生指纹.command
+/references/authplugin-research/kernel-provider/SETTINGS-LATE-BOUNDARY.md
 /.claude/
 /references/authplugin-research/agent-integration-candidate/*
 !/references/authplugin-research/agent-integration-candidate/early-boundary-observation/

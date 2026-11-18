@@ -1,39 +1,28 @@
-# ELAN USB 设备服务与原生系统接入
+# ELANSensorService 后台传感器服务
 
-本目录实现 `ELANSensorService` 普通用户设备服务、`ELANFingerprintUSB` 接口匹配驱动，以及与 `ELANNativeProbeAutomaticSettings.kext` 配合的系统设置录入、`coreauthd` 生物认证与锁屏解锁后端。
+本目录包含 `ELANSensorService` 用户态后台服务与 `ELANFingerprintUSB` 接口驱动，配合 `ELANNativeProbeAutomaticSettings.kext` 为 macOS 提供原生「触控 ID 与密码」支持。
 
-## 组件职责
+## 工作机制
 
-### 1. 普通用户设备服务（`ELANSensorService`）
+1. **服务启动与目录同步**
+   - `ELANSensorService` 由 LaunchAgent（`io.github.hackintosh-tools.elan-usb.plist`）在用户登录后自动拉起，监听 Mach 服务 `io.hackmac.elan.touchid`。
+   - 启动时连接内核 `ELANEnrollmentPolicyClient`，激活当前会话生物识别可用性并同步已录入的指纹 UUID 列表。
 
-- 由当前登录用户的 LaunchAgent（`io.github.hackintosh-tools.elan-usb.plist`）在 GUI 会话启动，注册 Mach 服务 `io.hackmac.elan.touchid`。
-- 启动时向内核 `ELANEnrollmentPolicyClient` 发布当前会话监听器（`ElanPublishSettingsListener`），并将本地持久化的指纹身份目录同步至内核 `AppleCredentialManager`（`ElanSyncProviderCatalog`）。
-- 指纹模板目录保存在 `~/Library/Application Support/ELANFingerprint/native-catalog-v2.plist`，触控 ID 开关受保护配置保存在同目录 `protected-config.plist`（文件权限均为 `0600`），避免登录或后台守护进程访问钥匙串时触发密码弹窗。
+2. **系统设置指纹录入与管理（`SettingsEnrollment.inc`）**
+   - 实现 `BiometricKitXpcProtocol` 服务端接口，支持在「系统设置 → 触控 ID 与密码」中直接录入、重命名、删除指纹，以及读写触控 ID 功能开关。
+   - 录入过程通过 USB 读取 `04f3:0c1a` 传感器图像并提取 SIFT 关键点模板，实时向系统设置返回采集进度与手指引导状态。
 
-### 2. 系统设置录入与配置管理（`SettingsEnrollment.inc`）
+3. **系统生物认证与锁屏解锁**
+   - 响应 `coreauthd` 发起的匹配请求（如 `密码.app`、Safari 自动填充等），比对通过后将匹配结果提交至内核 `AppleCredentialManager` 并返回 `BKIdentity`。
+   - 锁屏状态下（`CGSSessionScreenIsLocked`），后台监听线程检测到已录入指纹按压后，通过内核 `IOHIKeyboard` 接口自动提交解锁按键。
 
-- 对端连接通过 `audit_token_t`、代码签名与权限位区分系统设置扩展（`TouchIDPasswordExtension`）与 `coreauthd`（UID 501）。
-- 支持 `BiometricKitXpcProtocol` 的完整设置生命周期：
-  - `enroll:user:options:async:client:replyBlock:`：校验内核 `ElanCheckEnrollment` 授权上下文后启动 USB 采集，完成多阶段手指中心与边缘样本录入。
-  - `match:options:async:client:replyBlock:`（`BKOptionMatchForExtendEnrollment`）：录入完成前的扩展采集验证。
-  - `updateIdentity:` / `removeIdentity:` / `removeAllIdentitiesForUser:`：指纹重命名与删除，提交后实时同步内核目录并发送 `com.apple.BiometricKit.enrollmentChanged` 通知。
-  - `getProtectedConfigurationForUser:` / `setProtectedConfiguration:user:options:async:client:replyBlock:`：管理「使用触控 ID 解锁 Mac」「Apple Pay」等开关，并在首次存在有效指纹时自动初始化 `BiometricKit_UseTouchIDForPurchase`、`WebKitPreferences.useTouchIDForAutofill` 与 `AMSDeviceBiometricsState`。
-
-### 3. `coreauthd` 生物认证与锁屏解锁
-
-- 当 `密码.app`、Safari 自动填充或系统认证请求触控 ID 时，`coreauthd`（UID 501）发起带 `BKOptionMatchForCredentialSet` / `BKOptionAuthWithCredentialSet` 的 `match:` 调用：
-  - `ELANSensorService` 在采集期间通过 `statusMessage:` 回调手指按压/抬起状态（状态码 `63` / `64`）；
-  - 匹配成功后调用 `ElanSubmitDirectMatch` 将匹配的身份 UUID 与认证上下文提交至内核 `AppleCredentialManager`，随后通过 `matchResult:details:client:` 返回 `BKIdentity`。
-- 锁屏状态下（`CGSSessionScreenIsLocked`）：
-  - 后台监听线程 `elanStartLockScreenWatcher` 在检测到手指按压并完成特征比对（`lockwatcher-hit`）后，调用 `IOPMAssertionDeclareUserActivity` 唤醒显示，并通过 `ElanDispatchUnlockKeystrokes` 请求内核 `IOHIKeyboard::dispatchKeyboardEvent` 直接在 `ApplePS2Keyboard` 工作循环上发送密码按键与回车，无需任何 `Accessibility`（TCC）权限即可完成 `loginwindow` 解锁。
-
-## 构建与测试
+## 编译命令
 
 ```sh
-# 运行描述符解析、内核策略接口与对端审计令牌测试，并构建 ELANFingerprintUSB.kext 与 ELANSensorService
+# 编译 ELANSensorService 与单元测试
 sh build.sh /path/to/MacKernelSDK /tmp/elan-usb-build
 
-# 构建配对的 0.6.2 自动设置内核扩展
+# 编译配对的内核扩展
 python3 -B ../kernel-provider/build.py \
     --sdk /path/to/MacKernelSDK \
     --lilu /path/to/Lilu.kext/Contents/Resources \
