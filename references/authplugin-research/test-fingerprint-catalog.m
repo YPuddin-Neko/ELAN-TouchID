@@ -154,7 +154,12 @@ static int migrationTests(void) {
     legacy = original; writeError = errSecInteractionNotAllowed;
     REQUIRE(![repo loadOrMigrateLegacy:legacyReader error:&error] && error.code == writeError && !repo.current && !stored && !writes);
     writeError = 0;
+    REQUIRE([repo loadWithLegacyReader:legacyReader persistMigration:NO error:&error]);
+    REQUIRE(!writes && !stored && repo.current.records.count == 1);
+    NSUUID *previewIdentity = repo.current.records.firstObject.uuid;
+    NSData *previewState = repo.current.databaseState;
     REQUIRE([repo loadOrMigrateLegacy:legacyReader error:&error] && writes == 1 && repo.current.records.count == 1);
+    REQUIRE([repo.current.records.firstObject.uuid isEqual:previewIdentity] && [repo.current.databaseState isEqual:previewState]);
     REQUIRE([repo.current.records[0].templateData isEqual:original] && [legacy isEqual:original]);
     ElanFingerprintCatalog *migrated = repo.current;
     REQUIRE(migrated.databaseState.length == 32);

@@ -48,10 +48,11 @@ static void catalogReply(const NativeProviderWireRequest &request, NativeProvide
 }
 static void enrollmentReply(const NativeProviderWireRequest &request, NativeProviderWireReply &reply) {
     const auto &input = request.data.enrollment;
-    assert(input.abi == 1 && input.user == 501 && input.context[0] == 0x55);
+    assert(input.abi == 3 && input.user == 501 && input.context[0] == 0x55);
     auto &value = reply.data.enrollment;
-    value.abi = 1; value.active = 1; value.sequence = input.sequence;
-    value.passwordCredentialTypes = 1; value.ownerPolicy = value.authorized = 1;
+    value.abi = 3; value.active = 1; value.sequence = input.sequence;
+    value.passwordCredentialTypes = value.principalVerifiedTypes = 1; value.ownerPolicy = value.authorized = 1;
+    value.diagnostic = {0, UINT32_MAX, 0, 7};
 }
 static void settingsReply(const NativeProviderWireRequest &request, NativeProviderWireReply &reply) {
     const auto &input = request.data.settings;
@@ -60,6 +61,60 @@ static void settingsReply(const NativeProviderWireRequest &request, NativeProvid
     reply.data.platform = {1, 0, 1, 1, input.pid, 1, 1, 0};
 }
 int main() {
+    assert(nativeProviderIsSelector(ElanProviderSettingsInspect));
+    assert(nativeProviderInputSize(ElanProviderSettingsInspect) == sizeof(NativeSettingsProcessRequest));
+    assert(nativeProviderOutputSize(ElanProviderSettingsInspect) == sizeof(NativeSettingsInspectionReport));
+    assert(nativeProviderInputSize(ElanProviderSettingsRecover) == sizeof(NativeSettingsProcessRequest));
+    assert(nativeProviderOutputSize(ElanProviderSettingsRecover) == sizeof(NativeSettingsRecoveryReport));
+    assert(nativeProviderOutputSize(ElanProviderSettingsEnable) == 32);
+    NativeSettingsRecoveryReport recovery {{1, 0, 1, 1, 1234, 1, 1, 0}, 7, 0, 0, 0};
+    assert(nativeSettingsRecoveryReportValid(0, sizeof(recovery), recovery));
+    assert(!nativeSettingsRecoveryReportValid(-1, sizeof(recovery), recovery));
+    assert(!nativeSettingsRecoveryReportValid(0, 32, recovery));
+    for (unsigned phase = 0; phase < 7; phase++) {
+        auto failed = recovery; failed.phase = phase;
+        failed.platform.status = failed.transactionStatus = -31001;
+        failed.rollbackStatus = -31002;
+        assert(nativeSettingsRecoveryReportValid(0, sizeof(failed), failed));
+    }
+    auto invalid = recovery; invalid.phase = 8;
+    assert(!nativeSettingsRecoveryReportValid(0, sizeof(invalid), invalid));
+    invalid = recovery; invalid.rollbackStatus = -1;
+    assert(!nativeSettingsRecoveryReportValid(0, sizeof(invalid), invalid));
+    invalid = recovery; invalid.reserved = 1;
+    assert(!nativeSettingsRecoveryReportValid(0, sizeof(invalid), invalid));
+    assert(!nativeProviderIsSelector(ElanProviderStartupTrialRetire + 1));
+    NativeSettingsInspectionReport inspection {2, 0, 1, 1, 9, {0, 0, 0}};
+    assert(nativeSettingsInspectionAllowsEnable(0, sizeof(inspection), inspection));
+    auto emptyConnection = inspection; emptyConnection.observation = 2;
+    assert(!nativeSettingsInspectionAllowsRecovery(0, sizeof(emptyConnection), emptyConnection, false));
+    assert(nativeSettingsInspectionAllowsRecovery(0, sizeof(emptyConnection), emptyConnection, true));
+    assert(!nativeSettingsInspectionAllowsRecovery(0, sizeof(inspection), inspection, true));
+    assert(!nativeSettingsInspectionAllowsRecovery(-1, sizeof(emptyConnection), emptyConnection, true));
+    for (unsigned phase = 0; phase < 9; ++phase) {
+        auto incomplete = emptyConnection; incomplete.stage = phase;
+        assert(!nativeSettingsInspectionAllowsRecovery(0, sizeof(incomplete), incomplete, true));
+    }
+
+    for (uint32_t value : {0U, 2U, 3U, 4U, 5U, UINT32_MAX}) {
+        auto bad = inspection; bad.observation = value;
+        assert(!nativeSettingsInspectionAllowsEnable(0, sizeof(bad), bad));
+    }
+    for (unsigned i = 0; i < 3; ++i) {
+        auto bad = inspection; bad.reserved[i] = 1;
+        assert(!nativeSettingsInspectionAllowsEnable(0, sizeof(bad), bad));
+    }
+    assert(!nativeSettingsInspectionAllowsEnable(-1, sizeof(inspection), inspection));
+    assert(!nativeSettingsInspectionAllowsEnable(0, sizeof(inspection)-1, inspection));
+    auto rejected = inspection; rejected.status = -1;
+    assert(!nativeSettingsInspectionAllowsEnable(0, sizeof(rejected), rejected));
+    rejected = inspection; rejected.abi = 1;
+    assert(!nativeSettingsInspectionAllowsEnable(0, sizeof(rejected), rejected));
+    rejected = inspection; rejected.stage = 0;
+    assert(!nativeSettingsInspectionAllowsEnable(0, sizeof(rejected), rejected));
+    rejected = inspection; rejected.imageMatched = 2;
+    assert(!nativeSettingsInspectionAllowsEnable(0, sizeof(rejected), rejected));
+
     uint8_t identities[3][16] = {{0x11}, {0x22}, {0x33}};
     uint8_t context[16] = {0x55};
     auto begin = [&](int fd) { return elanProviderBeginCatalog(fd, identities[0], 3); };
@@ -82,13 +137,20 @@ int main() {
     auto authorize = [&](int fd) { return elanProviderAuthorizeEnrollment(fd, 3, context); };
     assert(!roundtrip(ElanProviderAuthorizeEnrollment, authorize, enrollmentReply));
     assert(roundtrip(ElanProviderAuthorizeEnrollment, authorize, [](const auto &request, auto &reply) {
+        enrollmentReply(request, reply); reply.data.enrollment.abi = 1;
+    }) != 0);
+    assert(roundtrip(ElanProviderAuthorizeEnrollment, authorize, [](const auto &request, auto &reply) {
+        enrollmentReply(request, reply); reply.data.enrollment.passwordCredentialTypes = 3;
+        reply.data.enrollment.principalVerifiedTypes = 1;
+    }) != 0);
+    assert(roundtrip(ElanProviderAuthorizeEnrollment, authorize, [](const auto &request, auto &reply) {
         enrollmentReply(request, reply); reply.data.enrollment.passwordCredentialTypes = 0;
     }));
     assert(roundtrip(ElanProviderAuthorizeEnrollment, authorize, [](const auto &request, auto &reply) {
-        enrollmentReply(request, reply); reply.data.enrollment.wrongUserPolicy = 1;
+        enrollmentReply(request, reply); reply.data.enrollment.principalVerifiedTypes = 0;
     }));
     assert(roundtrip(ElanProviderAuthorizeEnrollment, authorize, [](const auto &request, auto &reply) {
-        enrollmentReply(request, reply); reply.data.enrollment.operationStatus = -2;
+        enrollmentReply(request, reply); reply.data.enrollment.operationStatus = -2; reply.data.enrollment.authorized = 0; reply.data.enrollment.diagnostic.rejectKind = 8;
     }) == -2);
     assert(roundtrip(ElanProviderAuthorizeEnrollment, authorize, [](const auto &request, auto &reply) {
         enrollmentReply(request, reply); reply.data.enrollment.sequence--;

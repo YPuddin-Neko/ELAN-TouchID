@@ -1,6 +1,9 @@
 #import "ElanFingerprintCatalog.h"
 #import "ElanTemplateFormat.h"
 #import <CommonCrypto/CommonDigest.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 NSString *const ElanFingerprintCatalogErrorDomain = @"io.github.hackintosh-tools.elan.catalog";
@@ -182,10 +185,97 @@ static ElanCatalogReader keychainReader(unsigned user, NSString *account, BOOL i
         return status;
     };
 }
+static ElanCatalogReader fileReader(NSURL *fileURL, unsigned user) {
+    NSURL *target = [fileURL copy];
+    return ^OSStatus(NSData **data) {
+        *data = nil;
+        if (getuid() != user || ![target isKindOfClass:NSURL.class] || !target.isFileURL || !target.path.length)
+            return errSecAuthFailed;
+        const char *path = target.fileSystemRepresentation;
+        if (!path) return errSecParam;
+        int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0) {
+            if (errno == ENOENT) return errSecItemNotFound;
+            return (errno == ELOOP || errno == EACCES || errno == EPERM) ? errSecAuthFailed : errSecIO;
+        }
+        struct stat st = {};
+        if (fstat(fd, &st) != 0) { close(fd); return errSecIO; }
+        if (st.st_uid != user || !S_ISREG(st.st_mode)) { close(fd); return errSecAuthFailed; }
+        if (st.st_size <= 0 || st.st_size > 4 * 1024 * 1024) { close(fd); return errSecDecode; }
+        NSMutableData *buffer = [NSMutableData dataWithLength:(NSUInteger)st.st_size];
+        if (!buffer) { close(fd); return errSecAllocate; }
+        uint8_t *bytes = (uint8_t *)buffer.mutableBytes;
+        size_t remaining = (size_t)st.st_size;
+        while (remaining > 0) {
+            ssize_t got = read(fd, bytes, remaining);
+            if (got < 0) {
+                if (errno == EINTR) continue;
+                close(fd);
+                return errSecIO;
+            }
+            if (got == 0) { close(fd); return errSecDecode; }
+            bytes += (size_t)got;
+            remaining -= (size_t)got;
+        }
+        close(fd);
+        *data = buffer;
+        return errSecSuccess;
+    };
+}
+static ElanCatalogWriter fileWriter(NSURL *fileURL, unsigned user) {
+    NSURL *target = [fileURL copy];
+    return ^OSStatus(NSData *data, BOOL create) {
+        (void)create;
+        if (getuid() != user || ![target isKindOfClass:NSURL.class] || !target.isFileURL ||
+            !target.path.length || ![data isKindOfClass:NSData.class]) return errSecAuthFailed;
+        NSURL *dirURL = [target URLByDeletingLastPathComponent];
+        const char *dirPath = dirURL.fileSystemRepresentation;
+        const char *destPath = target.fileSystemRepresentation;
+        if (!dirPath || !destPath) return errSecParam;
+        (void)[[NSFileManager defaultManager] createDirectoryAtURL:dirURL
+            withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:NULL];
+        if (mkdir(dirPath, 0700) != 0 && errno != EEXIST) return errSecIO;
+        struct stat dirStat = {};
+        if (lstat(dirPath, &dirStat) != 0 || !S_ISDIR(dirStat.st_mode) || dirStat.st_uid != user)
+            return errSecAuthFailed;
+        if ((dirStat.st_mode & 0077) != 0) (void)chmod(dirPath, 0700);
+        struct stat destStat = {};
+        if (lstat(destPath, &destStat) == 0 && (!S_ISREG(destStat.st_mode) || destStat.st_uid != user))
+            return errSecAuthFailed;
+        NSString *pattern = [dirURL.path stringByAppendingPathComponent:@".native-catalog.XXXXXX"];
+        NSMutableData *tmplData = [[pattern dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+        if (!tmplData) return errSecParam;
+        char nul = 0;
+        [tmplData appendBytes:&nul length:1];
+        char *tmpl = (char *)tmplData.mutableBytes;
+        int fd = mkstemp(tmpl);
+        if (fd < 0) return errSecIO;
+        if (fchmod(fd, 0600) != 0) { close(fd); unlink(tmpl); return errSecIO; }
+        const uint8_t *bytes = (const uint8_t *)data.bytes;
+        size_t remaining = data.length;
+        while (remaining > 0) {
+            ssize_t put = write(fd, bytes, remaining);
+            if (put < 0) {
+                if (errno == EINTR) continue;
+                close(fd); unlink(tmpl);
+                return errSecIO;
+            }
+            bytes += (size_t)put;
+            remaining -= (size_t)put;
+        }
+        if (fsync(fd) != 0) { close(fd); unlink(tmpl); return errSecIO; }
+        if (close(fd) != 0) { unlink(tmpl); return errSecIO; }
+        if (rename(tmpl, destPath) != 0) { unlink(tmpl); return errSecIO; }
+        return errSecSuccess;
+    };
+}
 @implementation ElanFingerprintRepository
 - (instancetype)initWithUser:(unsigned)user pid:(unsigned)pid width:(unsigned)width height:(unsigned)height reader:(ElanCatalogReader)reader writer:(ElanCatalogWriter)writer {
     if ((self = [super init])) { _user = user; _pid = pid; _width = width; _height = height; _reader = [reader copy]; _writer = [writer copy]; }
     return self;
+}
+- (instancetype)initWithFileURL:(NSURL *)fileURL user:(unsigned)user pid:(unsigned)pid width:(unsigned)width height:(unsigned)height {
+    return [self initWithUser:user pid:pid width:width height:height reader:fileReader(fileURL, user) writer:fileWriter(fileURL, user)];
 }
 - (instancetype)initWithUserKeychain:(unsigned)user pid:(unsigned)pid width:(unsigned)width height:(unsigned)height interactive:(BOOL)interactive {
     NSDictionary *query = keychainQuery(@"native-fingerprints-v1");
@@ -209,6 +299,18 @@ static ElanCatalogReader keychainReader(unsigned user, NSString *account, BOOL i
     }
 }
 - (BOOL)loadOrMigrateLegacy:(ElanCatalogReader)legacyReader error:(NSError **)error {
+    return [self loadWithLegacyReader:legacyReader persistMigration:YES error:error];
+}
+- (BOOL)loadSnapshotFromUserKeychain:(NSError **)error {
+    return [self loadWithLegacyReader:keychainReader(self.user, @"fingerprints-v1", NO) persistMigration:NO error:error];
+}
+- (BOOL)useMigration:(ElanFingerprintCatalog *)catalog persist:(BOOL)persist error:(NSError **)error {
+    if (!catalog) return NO;
+    if (persist) return [self writeNew:catalog error:error];
+    self.current = catalog;
+    return YES;
+}
+- (BOOL)loadWithLegacyReader:(ElanCatalogReader)legacyReader persistMigration:(BOOL)persist error:(NSError **)error {
     @synchronized (self) {
         NSError *failure = nil;
         if ([self load:&failure]) return YES;
@@ -218,7 +320,11 @@ static ElanCatalogReader keychainReader(unsigned user, NSString *account, BOOL i
         }
         NSData *data = nil;
         OSStatus status = legacyReader(&data);
-        if (status == errSecItemNotFound) return [self createEmpty:error];
+        if (status == errSecItemNotFound) {
+            ElanFingerprintCatalog *empty = [ElanFingerprintCatalog emptyForUser:self.user pid:self.pid
+                width:self.width height:self.height error:error];
+            return [self useMigration:empty persist:persist error:error];
+        }
         if (status) return storageError(error, status);
         if (!ElanDecodeTemplate(data, self.pid, self.width, self.height) || data.length > UINT32_MAX)
             return catalogError(error, ElanCatalogInvalid);
@@ -229,7 +335,8 @@ static ElanCatalogReader keychainReader(unsigned user, NSString *account, BOOL i
         NSData *state = [NSData dataWithBytes:digest length:sizeof(digest)];
         volatile unsigned char *bytes = digest;
         for (size_t i = 0; i < sizeof(digest); i++) bytes[i] = 0;
-        return [self importLegacy:data uuid:uuid name:@"ELAN" databaseState:state error:error];
+        ElanFingerprintCatalog *legacy = [self catalogForTemplate:data uuid:uuid name:@"ELAN" state:state error:error];
+        return [self useMigration:legacy persist:persist error:error];
     }
 }
 - (BOOL)loadOrMigrateLegacyFromUserKeychain:(BOOL)interactive error:(NSError **)error {
@@ -242,13 +349,20 @@ static ElanCatalogReader keychainReader(unsigned user, NSString *account, BOOL i
     if (status) return storageError(error, status);
     self.current = catalog; return YES;
 }
+- (ElanFingerprintCatalog *)catalogForTemplate:(NSData *)data uuid:(NSUUID *)uuid name:(NSString *)name
+                                        state:(NSData *)state error:(NSError **)error {
+    if (![state isKindOfClass:NSData.class] || state.length != 32) {
+        catalogError(error, ElanCatalogInvalid);
+        return nil;
+    }
+    ElanFingerprintCatalog *empty = [ElanFingerprintCatalog emptyForUser:self.user pid:self.pid width:self.width height:self.height error:error];
+    ElanFingerprintCatalog *migrated = [empty addingTemplate:data uuid:uuid name:name error:error];
+    migrated.databaseState = state;
+    return migrated;
+}
 - (BOOL)importLegacy:(NSData *)data uuid:(NSUUID *)uuid name:(NSString *)name databaseState:(NSData *)state error:(NSError **)error {
     @synchronized (self) {
-        if (![state isKindOfClass:NSData.class] || state.length != 32) return catalogError(error, ElanCatalogInvalid);
-        ElanFingerprintCatalog *empty = [ElanFingerprintCatalog emptyForUser:self.user pid:self.pid width:self.width height:self.height error:error];
-        ElanFingerprintCatalog *migrated = [empty addingTemplate:data uuid:uuid name:name error:error];
-        migrated.databaseState = state;
-        return [self writeNew:migrated error:error];
+        return [self writeNew:[self catalogForTemplate:data uuid:uuid name:name state:state error:error] error:error];
     }
 }
 - (BOOL)createEmpty:(NSError **)error {

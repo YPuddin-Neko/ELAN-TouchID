@@ -21,7 +21,7 @@ class BackgroundServiceTests(unittest.TestCase):
         self.plist = self.root / 'daemon.plist'
         for name, value in [('INSTALL', self.install), ('PACKAGE', self.install), ('BACKGROUND_PLIST', self.plist)]:
             self.stack.enter_context(patch.object(d, name, value))
-        for name in ['require_root', 'verify_signatures', 'environment']:
+        for name in ['require_root', 'verify_signatures', 'environment', 'require_kernel_identity']:
             self.stack.enter_context(patch.object(d, name))
         self.stack.enter_context(patch.object(d, 'loaded_version', return_value=d.VERSION))
         self.cleanup = self.stack.enter_context(patch.object(d, 'cleanup'))

@@ -31,7 +31,7 @@ extern int elanRetryOwnHelper(uint64_t, uint64_t, uint64_t, uint64_t);
     printf("LAC_FIXTURE identity_query=%s\n", query.description.UTF8String);
     reply(@[self.fixture]);
 }
-- (void)getBioLockoutStateForUser:(unsigned int)user client:(uint64_t)client replyBlock:(void (^)(int, uint64_t))reply {
+- (void)getBioLockoutStateForUser:(unsigned int)user client:(uint64_t)client replyBlock:(void (^)(int, int64_t))reply {
     printf("LAC_FIXTURE lockout_user=%u\n", user); reply(user == 501 ? 0 : 1, 0);
 }
 - (void)getIdentitiesDatabaseHashForUser:(unsigned int)user client:(uint64_t)client replyBlock:(void (^)(NSData *))reply {

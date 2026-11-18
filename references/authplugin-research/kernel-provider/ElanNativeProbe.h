@@ -10,7 +10,8 @@ enum {
     ElanProviderBegin = 5, ElanProviderMatch = 6, ElanProviderEnd = 7,
     ElanProviderPlatformEnable = 8, ElanProviderPlatformRestore = 9,
     ElanProviderCatalogBegin = 10, ElanProviderCatalogReplace = 11, ElanProviderAuthorizeEnrollment = 12,
-    ElanProviderSettingsEnable = 13, ElanProviderSettingsRestore = 14
+    ElanProviderSettingsEnable = 13, ElanProviderSettingsRestore = 14, ElanProviderSettingsInspect = 15, ElanProviderSettingsRecover = 16,
+    ElanProviderStartupTrialArm = 17, ElanProviderStartupTrialCancel = 18, ElanProviderCoreauthRetire = 19, ElanProviderStartupTrialRetire = 20, ElanProbeReadiness = 21
 };
 
 struct NativeSettingsProcessRequest {
@@ -22,6 +23,16 @@ struct NativeSettingsProcessRequest {
     uint64_t image;
 };
 static_assert(sizeof(NativeSettingsProcessRequest) == 32, "settings process request ABI");
+
+struct NativeSettingsInspectionReport {
+    uint32_t abi;
+    int32_t status;
+    uint32_t observation;
+    uint32_t imageMatched;
+    uint32_t stage;
+    uint32_t reserved[3];
+};
+static_assert(sizeof(NativeSettingsInspectionReport) == 32, "settings inspection report ABI");
 
 struct NativePlatformProcessRequest {
     uint32_t abi;
@@ -72,3 +83,9 @@ typedef struct {
 } ElanNativeProbeReport;
 
 static_assert(sizeof(ElanNativeProbeReport) == 56, "probe ABI size");
+
+struct NativeReadinessReport {
+ uint32_t abi, stage, failure, symbolsReady, providerReady, liluStarted, retirementReady, platformReady;
+ uint32_t gateBusy, sessionActive, restorePending, ownerPresent, platformAttached, settingsAttached, trialCommitted, reserved;
+};
+static_assert(sizeof(NativeReadinessReport)==64, "read-only readiness ABI");

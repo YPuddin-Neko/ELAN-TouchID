@@ -46,7 +46,7 @@ static int command(Sensor *s, unsigned a, unsigned b) {
     return io(s, 0x01, c, sizeof(c));
 }
 
-static int frame(Sensor *s, unsigned short *out) {
+static int frameWithDelay(Sensor *s, unsigned short *out, useconds_t delayUs) {
     if (cancelled) return 0;
     /* 0c6e requires a status read before each image request. */
     if (s->pid == 0x0c6e) {
@@ -56,8 +56,16 @@ static int frame(Sensor *s, unsigned short *out) {
     if (!command(s, 0x00, 0x09) ||
         !io(s, 0x82, s->raw, s->w * s->hgt * 2)) return 0;
     elanpress_rotate_frame(s->raw, out, s->w, s->hgt);
-    usleep(80000);
+    if (delayUs) usleep(delayUs);
     return !cancelled;
+}
+
+static int frameCalibration(Sensor *s, unsigned short *out) {
+    return frameWithDelay(s, out, 5000);
+}
+
+static int frame(Sensor *s, unsigned short *out) {
+    return frameWithDelay(s, out, 15000);
 }
 
 static void close_sensor(Sensor *s) {
@@ -170,19 +178,22 @@ static unsigned char *stable_image(GSList *frames, int count, Sensor *s, double 
     return elanpress_process_frames(&first, 3, s->bg, s->w * s->hgt);
 }
 
-static ElanpressFeatures *captureWithReaderUntil(Sensor *s, int (*readFrame)(Sensor *, unsigned short *), double deadline) {
+static ElanpressFeatures *captureWithReaderOptionsUntil(Sensor *s, int (*readFrame)(Sensor *, unsigned short *),
+                                                        double deadline, int requiredClear) {
     int size = s->w * s->hgt;
     unsigned short *tmp = calloc(size, sizeof(*tmp));
     GSList *list = NULL;
-    int n = 0, clear = 0, started = 0;
+    int n = 0, clear = 0, started = 0, remindedLift = 0;
     int singlePress = s->pid == 0x0c1a;
     int frameCount = singlePress ? 1 : 10;
-    double landed = 0, processing = 0;
+    double entered = capture_milliseconds(), landed = 0, processing = 0;
     ElanpressFeatures *features = NULL;
     capture_last_result = ElanCapturePending;
     if (!tmp) { capture_last_result = ElanCaptureAllocationError; return NULL; }
-    progress("请先松开手指，等待采集提示。");
-    captureEvent(ElanCaptureAwaitRelease);
+    if (requiredClear >= 4) {
+        progress("请先松开手指，等待采集提示。");
+        captureEvent(ElanCaptureAwaitRelease);
+    }
     while (!cancelled && capture_milliseconds() < deadline) {
         if(capture_should_cancel && capture_should_cancel()) { capture_last_result = ElanCaptureCancelled; break; }
         if (!readFrame(s, tmp)) { capture_last_result = cancelled ? ElanCaptureCancelled : ElanCaptureDeviceError; break; }
@@ -192,13 +203,26 @@ static ElanpressFeatures *captureWithReaderUntil(Sensor *s, int (*readFrame)(Sen
         if (capture_milliseconds() >= deadline) { capture_last_result = ElanCaptureTimedOut; break; }
         ElanpressTouchStats stats;
         int touched = elanpress_frame_has_touch(tmp, s->bg, size, &stats);
-        if(capture_observer) capture_observer(&stats,touched,clear);
+        int releaseClean = !touched && (requiredClear >= 4 || stats.coverage < 0.03);
+        int reportTouched = requiredClear >= 4 ? touched : (touched && (started || clear >= requiredClear));
+        if (capture_observer && (reportTouched || releaseClean || requiredClear >= 4))
+            capture_observer(&stats, reportTouched, clear);
         if (!started) {
             if (!touched) {
-                if (++clear == 4) { progress(singlePress ? "请轻放手指。" : "请轻放手指并保持不动，看到松开提示后再抬起。"); captureEvent(ElanCaptureReady); }
+                if (releaseClean && ++clear == requiredClear) {
+                    progress(singlePress ? "请轻放手指。" : "请轻放手指并保持不动，看到松开提示后再抬起。");
+                    captureEvent(ElanCaptureReady);
+                }
                 continue;
             }
-            if (clear < 4) { clear = 0; continue; }
+            if (clear < requiredClear) {
+                clear = 0;
+                if (requiredClear > 0 && requiredClear < 4 && !remindedLift && capture_milliseconds() - entered >= 200) {
+                    remindedLift = 1;
+                    captureEvent(ElanCaptureAwaitRelease);
+                }
+                continue;
+            }
             started = 1;
             landed = capture_milliseconds();
             captureEvent(ElanCaptureTouchDetected);
@@ -282,8 +306,14 @@ static ElanpressFeatures *captureWithReaderUntil(Sensor *s, int (*readFrame)(Sen
     return features;
 }
 
+static ElanpressFeatures *captureWithReaderUntil(Sensor *s, int (*readFrame)(Sensor *, unsigned short *), double deadline) {
+    return captureWithReaderOptionsUntil(s, readFrame, deadline, 4);
+}
 static ElanpressFeatures *captureWithReader(Sensor *s, int (*readFrame)(Sensor *, unsigned short *)) {
     return captureWithReaderUntil(s, readFrame, capture_milliseconds() + capture_timeout_seconds * 1000.0);
+}
+static ElanpressFeatures *captureAfterRelease(Sensor *s, int alreadyClear) {
+    return captureWithReaderOptionsUntil(s, frame, capture_milliseconds() + capture_timeout_seconds * 1000.0, alreadyClear ? 0 : 1);
 }
 static ElanpressFeatures *captureUntil(Sensor *s, double deadline) { return captureWithReaderUntil(s, frame, deadline); }
 static ElanpressFeatures *capture(Sensor *s) { return captureWithReader(s, frame); }

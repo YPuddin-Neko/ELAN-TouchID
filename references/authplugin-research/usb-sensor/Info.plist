@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>io.github.hackintosh-tools.elan-fingerprint-usb</string>
+    <key>CFBundleName</key><string>ELANFingerprintUSB</string>
+    <key>CFBundleExecutable</key><string>ELANFingerprintUSB</string>
+    <key>CFBundlePackageType</key><string>KEXT</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleVersion</key><string>0.1.0</string>
+    <key>OSBundleLibraries</key>
+    <dict>
+        <key>com.apple.iokit.IOUSBHostFamily</key><string>1.0</string>
+        <key>com.apple.kpi.iokit</key><string>8.0.0</string>
+        <key>com.apple.kpi.libkern</key><string>8.0.0</string>
+    </dict>
+    <key>IOKitPersonalities</key>
+    <dict>
+        <key>ELANFingerprintUSB</key>
+        <dict>
+            <key>CFBundleIdentifier</key><string>io.github.hackintosh-tools.elan-fingerprint-usb</string>
+            <key>IOClass</key><string>ELANFingerprintUSB</string>
+            <key>IOMatchCategory</key><string>ELANFingerprintUSB</string>
+            <key>IOProviderClass</key><string>IOUSBHostInterface</string>
+            <key>idVendor</key><integer>1267</integer>
+            <key>idProduct</key><integer>3098</integer>
+            <key>bConfigurationValue</key><integer>1</integer>
+            <key>bInterfaceNumber</key><integer>0</integer>
+        </dict>
+    </dict>
+</dict>
+</plist>

@@ -1,0 +1,21 @@
+{
+  "captures": [
+    {
+      "path": "/tmp/elan-cached-dyld-public-pins.json",
+      "sha256": "c32f01abb73581ea52f44221313d58c0c1ba5428b965cdbbbb21b58179483c6c"
+    },
+    {
+      "path": "/tmp/elan-cached-dyld-independent-pins.json",
+      "sha256": "5ceab4b4266c78ef1eb30be5a2f41bda57bab860ba62ca0df64865f1a8e2928e"
+    }
+  ],
+  "public_system_file": "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_x86_64h",
+  "cache_uuid": "42ec2890bc40317ebb2745142bff7f26",
+  "dyld_uuid": "22e153254df03ba4882c314a2a7a3239",
+  "official_sources": [
+    "https://github.com/apple-oss-distributions/dyld/blob/dyld-1286.10/cache_builder/NewAdjustDylibSegments.cpp#L531-L550",
+    "https://github.com/apple-oss-distributions/dyld/blob/dyld-1286.10/dyld/dyldMain.cpp#L1175-L1219"
+  ],
+  "source_archive_sha256": "4edc2b4e8c51e7d1b67b27f38036a3f9800d209b8a23aa4d51bfd674d0bda14c",
+  "runtime_verified": false
+}

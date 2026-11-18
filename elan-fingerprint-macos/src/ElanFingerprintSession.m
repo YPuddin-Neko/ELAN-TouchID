@@ -5,6 +5,7 @@
 @property(nonatomic, copy) ElanCatalogPublisher publisher;
 @property(nonatomic, readwrite) ElanFingerprintMatcher *matcher;
 @property(nonatomic, readwrite) BOOL invalidated;
+@property(nonatomic, readwrite) BOOL commitOutcomeUnknown;
 @end
 
 @implementation ElanFingerprintSession
@@ -25,6 +26,7 @@
         }
         ElanFingerprintMatcher *prepared = [[ElanFingerprintMatcher alloc] initWithCatalog:candidate error:error];
         if (!prepared) return NO;
+        @try {
         int status = self.publisher(candidate);
         if (status) {
             self.invalidated = YES;
@@ -41,6 +43,12 @@
         }
         self.matcher = prepared;
         return YES;
+        } @catch (NSException *exception) {
+            self.invalidated = YES; self.commitOutcomeUnknown = YES;
+            if (error) *error = [NSError errorWithDomain:@"io.github.hackintosh-tools.elan.commit-outcome-unknown" code:1
+                userInfo:@{NSLocalizedDescriptionKey: @"Catalog publication or storage raised an exception; reconcile before retrying."}];
+            return NO;
+        }
     }
 }
 @end
