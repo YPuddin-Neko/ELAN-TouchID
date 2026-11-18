@@ -1,10 +1,10 @@
 #define NATIVE_STACK_NO_MAIN
 #include "native-stack-probe.m"
-#import "../../elan-fingerprint-macos/src/ElanFingerprintCatalog.h"
+#import "../../src/ElanFingerprintCatalog.h"
 #include "fingerprint-catalog-fixtures.h"
 #include "native-catalog-view.h"
-#import "../../elan-fingerprint-macos/src/ElanFingerprintSession.h"
-#import "../../elan-fingerprint-macos/src/ElanFingerprintEnrollment.h"
+#import "../../src/ElanFingerprintSession.h"
+#import "../../src/ElanFingerprintEnrollment.h"
 #include "native-enrollment-progress.h"
 #include "native-provider-interface.h"
 #include "native-enrollment-request.h"

@@ -45,12 +45,16 @@ python3 -B references/authplugin-research/kernel-provider/build.py \
 
 ## 目录结构
 
+- `src/`：指纹图像采集、多指纹身份目录、录入与匹配状态机。
+- `vendor/`：`libusb`（macOS IOKit USB 后端）与 `elanpress`（SIFT 局部特征提取与几何一致性比对）。
 - `references/authplugin-research/kernel-provider/`：`ELANNativeProbeAutomaticSettings.kext` 内核扩展源码。
 - `references/authplugin-research/usb-sensor/`：`ELANSensorService` 后台服务与 `BiometricKit` 协议实现，详见 [后台服务说明](references/authplugin-research/usb-sensor/README.md)。
 - `references/authplugin-research/agent-integration-candidate/`：内核符号绑定、进程识别与协议门面模块。
-- `elan-fingerprint-macos/`：底层 USB 采集（`libusb`）、`elanpress` SIFT 特征匹配算法与指纹模板序列化库，详见 [算法与采集库说明](elan-fingerprint-macos/README.md)。
-- `references/libfprint-elan.*`：`libfprint` ELAN 协议参考实现。
 
-## 开源许可
+## 致谢与开源许可
 
-底层采集与匹配库基于 [s17765152890-gif/elan-fingerprint-macos](https://github.com/s17765152890-gif/elan-fingerprint-macos) 及 `libfprint`（`elanpress`）适配开发，遵循 [LGPL-2.1-or-later](elan-fingerprint-macos/LICENSE) 许可证；上游归属详见 [UPSTREAM.md](elan-fingerprint-macos/UPSTREAM.md)。
+- [s17765152890-gif/elan-fingerprint-macos](https://github.com/s17765152890-gif/elan-fingerprint-macos)：macOS 用户态 ELAN USB 传感器通信参考。
+- [filip-rs/libfprint](https://github.com/filip-rs/libfprint/tree/elanpress)：`elanpress` SIFT 特征提取与匹配算法及 `04f3:0c1a` 协议参考。
+- [libusb/libusb](https://github.com/libusb/libusb)：用户态跨平台 USB 通信库。
+
+本项目遵循 [LGPL-2.1-or-later](LICENSE) 许可证。

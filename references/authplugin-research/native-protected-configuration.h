@@ -1,5 +1,5 @@
 #pragma once
-#import "../../elan-fingerprint-macos/src/ElanFingerprintSession.h"
+#import "../../src/ElanFingerprintSession.h"
 #include <errno.h>
 
 static inline NSDictionary *nativeUserProtectedConfiguration(ElanFingerprintCatalog *catalog) {

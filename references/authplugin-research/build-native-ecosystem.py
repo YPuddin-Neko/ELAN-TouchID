@@ -5,7 +5,7 @@ from pathlib import Path
 
 source = Path(__file__).resolve().parent
 root = source.parents[1]
-out = root / "elan-fingerprint-macos/build/research/native-ecosystem-01"
+out = root / "build/research/native-ecosystem-01"
 out.mkdir(parents=True, exist_ok=True)
 
 
@@ -16,7 +16,7 @@ def run(command, log):
         raise RuntimeError(f"{log}: {result.stdout}{result.stderr}")
 
 
-project = root / "elan-fingerprint-macos"
+project = root
 includes = ["-I" + str(project / "src"), "-I" + str(project / "vendor/elanpress")]
 binary = out / "NativeEnrollmentProbe"
 run(["xcrun", "clang", "-arch", "x86_64", "-mmacosx-version-min=15.2", "-O2", "-fobjc-arc",

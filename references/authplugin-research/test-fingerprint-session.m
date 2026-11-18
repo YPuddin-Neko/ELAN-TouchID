@@ -1,4 +1,4 @@
-#import "../../elan-fingerprint-macos/src/ElanFingerprintSession.h"
+#import "../../src/ElanFingerprintSession.h"
 #include "fingerprint-catalog-fixtures.h"
 
 #define REQUIRE(condition) do { if (!(condition)) { fprintf(stderr, "SESSION_FAIL line=%d expression=%s\n", __LINE__, #condition); return 1; } } while (0)

@@ -1,5 +1,5 @@
-#import "../../elan-fingerprint-macos/src/ElanFingerprintEnrollment.h"
-#import "../../elan-fingerprint-macos/src/ElanTemplateFormat.h"
+#import "../../src/ElanFingerprintEnrollment.h"
+#import "../../src/ElanTemplateFormat.h"
 #include "native-enrollment-progress.h"
 
 #define REQUIRE(condition) do { if (!(condition)) { fprintf(stderr, "ENROLLMENT_FAIL line=%d expression=%s\n", __LINE__, #condition); return 1; } } while (0)

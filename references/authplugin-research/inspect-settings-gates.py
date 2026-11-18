@@ -8,7 +8,7 @@ import subprocess
 import uuid
 
 root = Path(__file__).resolve().parents[2]
-folder = root / "elan-fingerprint-macos/build/research/native-ecosystem-01"
+folder = root / "build/research/native-ecosystem-01"
 binary = folder / "TouchIDSettings.target"
 data = binary.read_bytes()
 assert struct.unpack_from(">I", data)[0] == 0xCAFEBABE

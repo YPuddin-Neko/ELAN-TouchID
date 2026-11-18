@@ -5,10 +5,10 @@ from pathlib import Path
 
 source = Path(__file__).resolve().parent
 root = source.parents[1]
-out = root / 'elan-fingerprint-macos/build/research/native-ecosystem-01'
+out = root / 'build/research/native-ecosystem-01'
 out.mkdir(parents=True, exist_ok=True)
 binary = out / 'NativeConfigurationProbe'
-project = root / 'elan-fingerprint-macos'
+project = root
 includes = ['-I' + str(project / 'src'), '-I' + str(project / 'vendor/elanpress')]
 model = [project / 'src' / ('ElanFingerprint' + name + '.m') for name in ['Catalog', 'Matcher', 'Session']]
 model += [project / 'vendor/elanpress' / ('elanpress-' + name + '.c') for name in ['match', 'sift']]

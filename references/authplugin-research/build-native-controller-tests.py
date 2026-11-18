@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 source = Path(__file__).resolve().parent
-out = source.parents[1] / 'elan-fingerprint-macos/build/research/native-provider-06'
+out = source.parents[1] / 'build/research/native-provider-06'
 out.mkdir(parents=True, exist_ok=True)
 
 

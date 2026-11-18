@@ -7,7 +7,7 @@ from pathlib import Path
 
 source = Path(__file__).resolve().parent
 root = source.parents[1]
-DEFAULT_OUT = root / "elan-fingerprint-macos/build/research/native-provider-06"
+DEFAULT_OUT = root / "build/research/native-provider-06"
 out = DEFAULT_OUT
 identity_spec = importlib.util.spec_from_file_location("native_kernel_identity", source / "native-kernel-identity.py")
 identity = importlib.util.module_from_spec(identity_spec)
