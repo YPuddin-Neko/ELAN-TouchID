@@ -24,13 +24,16 @@ def copy(origin, destination):
 
 for name in deployment.ASSETS[:4]:
     copy(build / 'native-provider-06' / name, package / name)
-shutil.copy2(source / 'native-provider-deployment.py', package / 'native-provider-deployment.py')
-shutil.copy2(source / 'native-session-lifecycle.py', package / 'native-session-lifecycle.py')
+for name in ['native-provider-deployment.py', 'native-session-lifecycle.py',
+             'native-settings-diagnostic.py', 'native-settings-result.py', 'native-kernel-identity.py']:
+    shutil.copy2(source / name, package / name)
 for version in ['05', '06']:
     destination = package / 'payload' / ('native-kernel-probe-' + version)
     destination.mkdir(parents=True)
     copy(build / ('native-kernel-probe-' + version) / 'ELANNativeProbe.kext', destination / 'ELANNativeProbe.kext')
     if version == '06':
+        shutil.copy2(build / 'native-kernel-probe-06/kernel-identity.json', destination / 'kernel-identity.json')
+        deployment.require_kernel_artifact(package)
         shutil.copy2(build / 'native-kernel-probe-06/elan-native-probe', destination / 'elan-native-probe')
         shutil.copy2(source / 'kernel-provider/manage-efi.py', destination / 'manage-efi.py')
 previous = package / 'previous'
@@ -59,6 +62,7 @@ for filename, action, installed in [
     ('7-启用后台指纹服务.command', 'enable-background', True),
     ('8-停止后台指纹服务.command', 'disable-background', True),
     ('9-查看后台服务状态.command', 'background-status', True),
+    ('10-原生设置短诊断.command', 'diagnose-settings', True),
 ]:
     location = "'/Library/ELANFingerprintNativeTest/native-provider-deployment.py'" if installed else '\"$package_dir/native-provider-deployment.py\"'
     text = '#!/bin/zsh\npackage_dir="${0:A:h}"\n'
@@ -91,12 +95,15 @@ for filename, action, installed in [
 第 7 项在系统 LaunchDaemons 中安装后台服务，随后自动运行；登录当前用户后接入指纹，切换或退出用户时清理，睡眠后重新连接。先完成原生认证、设置和会话测试，再启用。
 第 8 项停止后台服务并移除自动启动配置；第 9 项查看状态，无需管理员密码。运行其他测试或撤回时，也会先停止后台服务。
 后台管理程序异常退出时，配套程序通过控制连接断开退出，系统再启动管理程序进行恢复。检测到配置、钥匙串或连续运行错误时停止服务，需处理错误后重新启用。
+第 10 项启动临时原生服务，通过现有代理接入设置，仍可能临时修改认证和设置扩展的内存状态；结束时执行清理。只观察界面，不重复四项认证，不录入或删除指纹、不更改开关，也不启用连接缓存恢复。运行前会停止后台服务并取消自动启动；结束后需要时用第 7 项重新启用。诊断及清理结果以脱敏 JSON 输出；输入 cancel 或按 Control-C 可取消并清理。
 脚本不自动重启，不修改 USB、蓝牙或启动参数。
 """)
 record = {'package': str(package), 'version': deployment.VERSION, 'previous_version': deployment.PREVIOUS_VERSION,
           'asset_files': len(files), 'signatures_verified': True, 'source_syntax_verified': True,
+          'kernel_identity_manifest': 'payload/' + deployment.KERNEL_PACKAGE + '/kernel-identity.json',
           'installed': False, 'deployment_authorized': False, 'live_settings_tested': False,
-          'test_actions': ['authentication-regression', 'native-settings-lifecycle', 'bounded-session-lifecycle', 'managed-background-service'],
+          'test_actions': ['authentication-regression', 'native-settings-lifecycle', 'bounded-session-lifecycle', 'managed-background-service',
+                           'native-settings-diagnostic'],
           'user_session_guard_integrated': True, 'session_transition_runtime_verified': False,
           'bounded_session_supervisor_prepared': True, 'session_supervisor_live_tested': False,
           'power_transition_guard_prepared': True, 'sleep_wake_runtime_verified': False,

@@ -9,7 +9,14 @@
 #include "NativeCredentialStudy.h"
 #include "NativeEnvironmentSlot.h"
 #include "NativeProviderABI.h"
+#include "NativePasswordPrincipal.h"
+#include "NativePasswordPrincipalProfile.h"
 #include "NativePlatformProcess.h"
+#include "../agent-integration-candidate/startup-retirement/PatcherBootstrap.h"
+#include "NativeStartupObserverKernel.h"
+#include "NativeOperationGate.h"
+#include "NativeStartupTrialState.h"
+#include <libkern/c++/OSSymbol.h>
 
 static const char *acmPaths[] = {
     "/System/Library/Extensions/AppleCredentialManager.kext/Contents/MacOS/AppleCredentialManager"
@@ -37,15 +44,41 @@ static NativeProviderAPI providerAPI {};
 static NativeEnrollmentAPI enrollmentAPI {};
 static OSObject *providerOwner;
 static IOLock *providerLock;
+static NativeOperationGate providerGate;
+static NativeStartupTrialState startupTrial;
+static OSObject *startupLeaseOwner;
+static bool startupTrialRecoveryPending;
+static bool startupTrialCommitted;
+static OSObject *startupRecoveryOwner;
 static NativePlatformProcess providerPlatform;
 static NativePlatformProcess settingsPlatform;
 static const uint8_t *globalContextHandle;
 static const uint8_t *nullContextHandle;
 static bool providerReady;
+static uint32_t readinessStage, readinessFailure, retirementReady, platformReady;
+
+static void publishReadinessProperties(IOService *service) {
+    if (!service) return;
+    service->setProperty("NativeReadinessStage", __atomic_load_n(&readinessStage, __ATOMIC_ACQUIRE), 32);
+    service->setProperty("NativeReadinessFailure", __atomic_load_n(&readinessFailure, __ATOMIC_ACQUIRE), 32);
+    service->setProperty("NativeRetirementReady", __atomic_load_n(&retirementReady, __ATOMIC_ACQUIRE), 32);
+    service->setProperty("NativePlatformReady", __atomic_load_n(&platformReady, __ATOMIC_ACQUIRE), 32);
+    service->setProperty("NativeProviderReady", __atomic_load_n(&readinessStage, __ATOMIC_ACQUIRE) == 8);
+}
+struct PublishReadinessOnExit {
+    ~PublishReadinessOnExit() {
+        auto *matching = IOService::serviceMatching(ELAN_NATIVE_PROBE_SERVICE);
+        auto *service = matching ? IOService::copyMatchingService(matching) : nullptr;
+        if (matching) matching->release();
+        if (service) { publishReadinessProperties(service); service->release(); }
+    }
+};
 
 static const NativeEnvironmentSlot *availabilitySlot;
 static const void *availabilityValidation;
 static int (*findStudyCredential)(const void *, unsigned, void **);
+static int (*copyStudyCredentials)(const void *, unsigned, unsigned, void ***, unsigned *);
+static void (*deallocStudyCredentials)(void **, unsigned);
 static int (*getStudyProperty)(const void *, unsigned, const void **, size_t *);
 
 static int emptyPrivateContext(const uint8_t *handle) {
@@ -57,21 +90,18 @@ static int emptyPrivateContext(const uint8_t *handle) {
     return status == -7 && !borrowed ? 0 : status ? status : NativeProviderBusy;
 }
 
-static int privatePasswordContext(const uint8_t *handle, uint32_t *types) {
-    *types = 0;
+static int privatePasswordContext(const uint8_t *handle, uint32_t expectedUser,
+                                  uint32_t *types, uint32_t *principalTypes, NativeEnrollmentDiagnostic *diagnostic) {
+    *types = 0; *principalTypes = 0;
     if (!globalContextHandle || !nullContextHandle || !memcmp(handle, globalContextHandle, 16) ||
-        !memcmp(handle, nullContextHandle, 16)) return NativeProviderInvalid;
-    const unsigned credentials[] = {1, 10};
-    for (unsigned i = 0; i < arrsize(credentials); i++) {
-        void *borrowed = nullptr;
-        int status = findStudyCredential(handle, credentials[i], &borrowed);
-        if (status == -7 && !borrowed) continue;
-        if (status) return status;
-        if (!borrowed) return NativeStudyUnexpected;
-        *types |= 1U << i;
-    }
-    return 0;
+        !memcmp(handle, nullContextHandle, 16)) { diagnostic->rejectKind=NativeEnrollmentContext; return NativeProviderInvalid; }
+    return nativePasswordPrincipals({copyStudyCredentials, deallocStudyCredentials, getStudyProperty}, handle,
+                                    expectedUser, types, principalTypes, diagnostic);
 }
+
+#ifdef ELAN_DIRECT_ENROLLMENT
+#include "NativeDirectEnrollmentClient.inc"
+#endif
 
 static int studyPreflight(bool withAvailability, uint32_t *valueWasPresent) {
     if (!studyReady || !availabilitySlot) return NativeStudyUnexpected;
@@ -118,16 +148,20 @@ static bool matchesUUID(mach_vm_address_t address, size_t size) {
 
 static void acmLoaded(void *, KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size) {
     if (index != acmInfo.loadIndex || __atomic_load_n(&symbolsReady, __ATOMIC_ACQUIRE)) return;
+    PublishReadinessOnExit publishOnExit;
+    __atomic_store_n(&readinessStage, 1U, __ATOMIC_RELEASE);
     __atomic_fetch_or(&initializationStages, ElanStageCallbackSeen, __ATOMIC_RELAXED);
     bool supported = matchesUUID(address, size);
     __atomic_store_n(&uuidMatched, supported ? 1U : 0U, __ATOMIC_RELAXED);
-    if (!supported) { SYSLOG("native", "unsupported ACM image; probe disabled"); return; }
+    if (!supported) { __atomic_store_n(&readinessFailure, 1U, __ATOMIC_RELEASE); SYSLOG("native", "unsupported ACM image; probe disabled"); return; }
+    __atomic_store_n(&readinessStage, 2U, __ATOMIC_RELEASE);
     const char *names[] = {"_Cred_GetPermissions", "_Env_GetVariableByte", "_ACMKernContextCreate", "_ACMKernContextDelete"};
     mach_vm_address_t functions[4] = {};
     for (unsigned i = 0; i < arrsize(names); i++) {
         functions[i] = patcher.solveSymbol(index, names[i]);
         patcher.clearError();
         if (functions[i] < address || functions[i] - address >= size) {
+            __atomic_store_n(&readinessFailure, 2U, __ATOMIC_RELEASE);
             SYSLOG("native", "required symbol %u unavailable", i);
             return;
         }
@@ -137,24 +171,33 @@ static void acmLoaded(void *, KernelPatcher &patcher, size_t index, mach_vm_addr
     getAvailability = reinterpret_cast<decltype(getAvailability)>(functions[1]);
     createContext = reinterpret_cast<decltype(createContext)>(functions[2]);
     deleteContext = reinterpret_cast<decltype(deleteContext)>(functions[3]);
+    __atomic_store_n(&readinessStage, 3U, __ATOMIC_RELEASE);
     const char *studyNames[] = {
         "_LibCall_ACMCredentialCreate", "_LibCall_ACMCredentialDelete", "_LibCall_ACMCredentialSetProperty",
         "_addCredential", "_findCredentialHelper", "_ACMKernContextVerifyPolicyAndCopyRequirementEx",
         "_ACMKernRequirementDelete", "_Env_SetVariable", "__envTable", "_DataValidation_BiometryPresent",
-        "_LibCall_ACMCredentialGetPropertyData"
+        "_LibCall_ACMCredentialGetPropertyData", "_CopyCredentials", "_DeallocCredentialList"
     };
     mach_vm_address_t studyFunctions[arrsize(studyNames)] = {};
     bool complete = true;
     for (unsigned i = 0; i < arrsize(studyNames); i++) {
         studyFunctions[i] = patcher.solveSymbol(index, studyNames[i]);
         patcher.clearError();
-        size_t required = i == 8 ? 7 * sizeof(NativeEnvironmentSlot) : 1;
+        size_t required = i == 8 ? 7 * sizeof(NativeEnvironmentSlot) :
+                          i == 11 ? sizeof(NativeCopyCredentialsProfile) :
+                          i == 12 ? sizeof(NativeDeallocCredentialListProfile) : 1;
         if (studyFunctions[i] < address || studyFunctions[i] - address > size ||
             required > size - (studyFunctions[i] - address)) complete = false;
     }
+    if (complete && (memcmp(reinterpret_cast<const void *>(studyFunctions[11]), NativeCopyCredentialsProfile, sizeof(NativeCopyCredentialsProfile)) ||
+                     memcmp(reinterpret_cast<const void *>(studyFunctions[12]), NativeDeallocCredentialListProfile, sizeof(NativeDeallocCredentialListProfile)))) complete = false;
+    if (!complete) __atomic_store_n(&readinessFailure, 3U, __ATOMIC_RELEASE);
     if (complete) {
+        __atomic_store_n(&readinessStage, 4U, __ATOMIC_RELEASE);
         findStudyCredential = reinterpret_cast<decltype(findStudyCredential)>(studyFunctions[4]);
         getStudyProperty = reinterpret_cast<decltype(getStudyProperty)>(studyFunctions[10]);
+        copyStudyCredentials = reinterpret_cast<decltype(copyStudyCredentials)>(studyFunctions[11]);
+        deallocStudyCredentials = reinterpret_cast<decltype(deallocStudyCredentials)>(studyFunctions[12]);
         studyAPI = {studyPreflight, getAvailability, reinterpret_cast<decltype(studyAPI.setAvailability)>(studyFunctions[7]),
                     createContext, deleteContext,
                     reinterpret_cast<decltype(studyAPI.createCredential)>(studyFunctions[0]),
@@ -175,38 +218,109 @@ static void acmLoaded(void *, KernelPatcher &patcher, size_t index, mach_vm_addr
             nullContextHandle = reinterpret_cast<const uint8_t *>(nullHandle);
             providerAPI = {studyAPI, emptyPrivateContext};
             enrollmentAPI = {studyAPI, privatePasswordContext};
-            providerReady = NativePlatformProcess::initialize(patcher);
+#ifdef ELAN_DIRECT_ENROLLMENT
+            prepareDirectEnrollment(patcher);
+#endif
+            __atomic_store_n(&readinessStage, 5U, __ATOMIC_RELEASE);
+#ifndef ELAN_AUTOMATIC_SETTINGS
+            bool retirement = RetirementRuntime::configureFromPatcher(patcher);
+            __atomic_store_n(&retirementReady, retirement ? 1U : 0U, __ATOMIC_RELEASE);
+            if (!retirement) __atomic_store_n(&readinessFailure, 5U, __ATOMIC_RELEASE);
+            else {
+                __atomic_store_n(&readinessStage, 6U, __ATOMIC_RELEASE);
+                bool platform = NativePlatformProcess::initialize(patcher);
+                __atomic_store_n(&platformReady, platform ? 1U : 0U, __ATOMIC_RELEASE);
+                if (!platform) __atomic_store_n(&readinessFailure, 6U, __ATOMIC_RELEASE);
+                else __atomic_store_n(&readinessStage, 7U, __ATOMIC_RELEASE);
+                providerReady = platform;
+            }
+#endif
+        } else {
+            __atomic_store_n(&readinessFailure, 4U, __ATOMIC_RELEASE);
         }
     }
     __atomic_store_n(&symbolsReady, 1U, __ATOMIC_RELEASE);
+    if (providerReady) __atomic_store_n(&readinessStage, 8U, __ATOMIC_RELEASE);
     SYSLOG("native", "ACM diagnostic entrypoints ready");
 }
 
+#ifdef ELAN_AUTOMATIC_SETTINGS
+uint64_t elanSettingsStartupDiagnostic();
+uint32_t elanSettingsStartupAttempts();
+uint32_t elanSettingsStartupRouted();
+#endif
 class ELANNativeProbe : public IOService {
     OSDeclareDefaultStructors(ELANNativeProbe)
 public:
     bool start(IOService *provider) override;
+#ifdef ELAN_AUTOMATIC_SETTINGS
+    bool serializeProperties(OSSerialize *output) const override;
+#endif
     IOReturn newUserClient(task_t task, void *securityID, UInt32 type, IOUserClient **handler) override;
     IOReturn collectReport(uint32_t selector, ElanNativeProbeReport *report);
-    IOReturn collectStudy(uint32_t selector, NativeCredentialStudyReport *report);
+    IOReturn collectStudy(OSObject *client, uint32_t selector, NativeCredentialStudyReport *report);
     IOReturn providerOperation(OSObject *client, uint32_t selector, const void *input, void *output);
     void providerClosed(OSObject *client);
+    IOReturn callPlatformFunction(const OSSymbol *, bool, void *, void *, void *, void *) override;
+    IOReturn startupTrialLease(NativeStartupTrialLeaseRequest &);
+    IOReturn startupTrialArm(OSObject *, const NativeStartupTrialRequest &, NativeStartupTrialReport &);
+    IOReturn startupTrialCancel(OSObject *, const NativeStartupTrialRequest &, NativeStartupTrialReport &);
 private:
     static IOReturn collectGated(OSObject *owner, void *selector, void *report, void *, void *);
     static IOReturn studyGated(OSObject *owner, void *selector, void *report, void *, void *);
     static IOReturn providerGated(OSObject *, void *selector, void *input, void *output, void *);
     IOReturn providerACM(uint32_t selector, const void *input, void *report);
+    IOReturn providerRun(OSObject *client, uint32_t selector, const void *input, void *output, bool study);
+    IOReturn providerDispatch(OSObject *client, uint32_t selector, const void *input, void *output);
+    IOReturn providerStudy(uint32_t selector, NativeCredentialStudyReport *report);
+    void providerCleanup();
+    void providerPublish();
 };
 
-class ELANNativeProbeClient : public IOUserClient {
-    OSDeclareDefaultStructors(ELANNativeProbeClient)
-public:
-    IOReturn clientClose() override;
-    IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *arguments,
-                           IOExternalMethodDispatch *, OSObject *, void *) override;
-};
+static int nativeRetireCommittedSettings(NativeStartupTrialReport &report) {
+    if (!startupTrialCommitted) { report = {1, 0, 0, 0, 0, 0, 0}; return 0; }
+    report = {1, NativeProviderNotActive, 0, 0, 0, 1, 0};
+    auto *matching = IOService::serviceMatching(NativeStartupTrialWriterService);
+    IOService *writer = matching ? IOService::copyMatchingService(matching) : nullptr;
+    if (matching) matching->release();
+    if (!writer) return NativeProviderNotActive;
+    auto *name = OSSymbol::withCString(NativeStartupTrialRetireFunction);
+    IOReturn result = name ? writer->callPlatformFunction(name, false, &report, nullptr, nullptr, nullptr) : kIOReturnNoMemory;
+    if (name) name->release();
+    writer->release();
+    bool clean = !result && report.abi == 1 && !report.status && !report.armed && !report.inFlight && !report.recoveryRequired;
+    if (!clean) { report.recoveryRequired = 1; if (!report.status) report.status = NativeProviderBusy; }
+    if (clean) startupTrialCommitted = false;
+    return clean ? 0 : NativeProviderBusy;
+}
+
+#include "NativeProviderOperationLifecycle.h"
 
 OSDefineMetaClassAndStructors(ELANNativeProbe, IOService)
+#ifdef ELAN_AUTOMATIC_SETTINGS
+bool ELANNativeProbe::serializeProperties(OSSerialize *output) const {
+    // Allocate registry values only on a registry read, never in the startup hook.
+    auto *service=const_cast<ELANNativeProbe *>(this);
+    service->setProperty("SettingsStartupDiagnostic",elanSettingsStartupDiagnostic(),64);
+    service->setProperty("SettingsStartupAttempts",elanSettingsStartupAttempts(),32);
+    service->setProperty("SettingsStartupRouted",elanSettingsStartupRouted(),32);
+    service->setProperty("SettingsStartupEnabled",elanSettingsStartupAvailable());
+#ifdef ELAN_DIRECT_ENROLLMENT
+    const uint64_t word=directEnrollmentDiagnostic.snapshot();
+    const auto enrollment=NativeEnrollmentDiagnostics::decode(word);
+    service->setProperty("EnrollmentDiagnostic",word,64);
+    service->setProperty("EnrollmentObserved",enrollment.observed);
+    service->setProperty("EnrollmentOperationStatus",enrollment.operationStatus,32);
+    service->setProperty("EnrollmentRejectKind",enrollment.rejectKind,32);
+    service->setProperty("EnrollmentPasswordTypes",enrollment.passwordTypes,32);
+    service->setProperty("EnrollmentPrincipalTypes",enrollment.principalTypes,32);
+    service->setProperty("EnrollmentOwnerPolicy",enrollment.ownerPolicy);
+    service->setProperty("EnrollmentAuthorized",enrollment.authorized);
+#endif
+    return IOService::serializeProperties(output);
+}
+#endif
+
 OSDefineMetaClassAndStructors(ELANNativeProbeClient, IOUserClient)
 
 bool ELANNativeProbe::start(IOService *provider) {
@@ -218,21 +332,35 @@ bool ELANNativeProbe::start(IOService *provider) {
     setProperty("LiluStarted", ADDPR(startSuccess));
     setProperty("AuthenticationEnabled", false);
     setProperty("ProviderSessionActive", false);
+    setProperty("ProviderRestorePending", false);
+    publishReadinessProperties(this);
     registerService();
     SYSLOG("native", "diagnostic service published; Lilu started=%d", ADDPR(startSuccess));
     return true;
 }
 
-IOReturn ELANNativeProbeClient::clientClose() {
-    auto *provider = OSDynamicCast(ELANNativeProbe, getProvider());
-    if (provider) provider->providerClosed(this);
-    terminate();
-    return kIOReturnSuccess;
+IOReturn ELANNativeProbe::callPlatformFunction(const OSSymbol *name, bool wait, void *p1, void *p2, void *p3, void *p4) {
+#ifdef ELAN_AUTOMATIC_SETTINGS
+    return IOService::callPlatformFunction(name, wait, p1, p2, p3, p4);
+#else
+    if (!name || !name->isEqualTo(NativeStartupTrialLeaseFunction))
+        return IOService::callPlatformFunction(name, wait, p1, p2, p3, p4);
+    if (wait || !p1 || p2 || p3 || p4) return kIOReturnBadArgument;
+    return startupTrialLease(*static_cast<NativeStartupTrialLeaseRequest *>(p1));
+#endif
 }
 
 IOReturn ELANNativeProbe::newUserClient(task_t task, void *securityID, UInt32 type, IOUserClient **handler) {
-    if (!handler || type != 0) return kIOReturnBadArgument;
+    if (!handler) return kIOReturnBadArgument;
     *handler = nullptr;
+#ifdef ELAN_DIRECT_ENROLLMENT
+    if (type == ElanEnrollmentConnectionType)
+        return ELANEnrollmentPolicyClient::open(this, task, securityID, handler);
+#endif
+#ifdef ELAN_AUTOMATIC_SETTINGS
+    return kIOReturnUnsupported;
+#else
+    if (type != 0) return kIOReturnBadArgument;
     if (kauth_cred_getuid(kauth_cred_get()) != 0) return kIOReturnNotPrivileged;
     auto *client = new ELANNativeProbeClient;
     if (!client) return kIOReturnNoMemory;
@@ -241,11 +369,44 @@ IOReturn ELANNativeProbe::newUserClient(task_t task, void *securityID, UInt32 ty
     if (!client->start(this)) { client->detach(this); client->release(); return kIOReturnError; }
     *handler = client;
     return kIOReturnSuccess;
+#endif
 }
 
 IOReturn ELANNativeProbeClient::externalMethod(uint32_t selector, IOExternalMethodArguments *arguments,
                                              IOExternalMethodDispatch *, OSObject *, void *) {
+    if (isClosing()) return kIOReturnNotAttached;
     if (kauth_cred_getuid(kauth_cred_get()) != 0) return kIOReturnNotPrivileged;
+    if (selector == ElanProbeReadiness) {
+        if (!arguments || arguments->scalarInputCount || arguments->scalarOutputCount ||
+            arguments->structureInputSize || arguments->structureInputDescriptor || arguments->structureOutputDescriptor ||
+            !arguments->structureOutput || arguments->structureOutputSize != sizeof(NativeReadinessReport)) return kIOReturnBadArgument;
+        NativeReadinessReport report {};
+        report.abi = 1;
+        report.stage = __atomic_load_n(&readinessStage, __ATOMIC_ACQUIRE);
+        report.failure = __atomic_load_n(&readinessFailure, __ATOMIC_ACQUIRE);
+        report.symbolsReady = __atomic_load_n(&symbolsReady, __ATOMIC_ACQUIRE);
+        report.providerReady = report.stage == 8;
+        report.liluStarted = ADDPR(startSuccess) ? 1U : 0U;
+        report.retirementReady = __atomic_load_n(&retirementReady, __ATOMIC_ACQUIRE);
+        report.platformReady = __atomic_load_n(&platformReady, __ATOMIC_ACQUIRE);
+        if (!providerLock) report.gateBusy = 1;
+        else {
+            IOLockLock(providerLock);
+            report.gateBusy = providerGate.snapshot().active;
+            if (!report.gateBusy) {
+                report.sessionActive = providerState.active;
+                report.restorePending = startupTrialRecoveryPending || availabilityRestorePending || providerState.restorePending || providerState.quarantined || providerGate.snapshot().recoveryOnly;
+                report.ownerPresent = providerOwner != nullptr;
+                report.platformAttached = providerPlatform.attached();
+                report.settingsAttached = settingsPlatform.attached();
+                report.trialCommitted = startupTrialCommitted;
+            }
+            IOLockUnlock(providerLock);
+        }
+        memcpy(arguments->structureOutput, &report, sizeof(report));
+        arguments->structureOutputSize = sizeof(report);
+        return kIOReturnSuccess;
+    }
     if (nativeProviderIsSelector(selector)) {
         size_t inputSize = nativeProviderInputSize(selector);
         size_t outputSize = nativeProviderOutputSize(selector);
@@ -274,7 +435,7 @@ IOReturn ELANNativeProbeClient::externalMethod(uint32_t selector, IOExternalMeth
     if (!provider || isInactive()) return kIOReturnNotAttached;
     if (study) {
         NativeCredentialStudyReport report {};
-        IOReturn status = provider->collectStudy(selector, &report);
+        IOReturn status = provider->collectStudy(this, selector, &report);
         memcpy(arguments->structureOutput, &report, sizeof(report));
         arguments->structureOutputSize = sizeof(report);
         return status;
@@ -283,66 +444,6 @@ IOReturn ELANNativeProbeClient::externalMethod(uint32_t selector, IOExternalMeth
     IOReturn status = provider->collectReport(selector, &report);
     memcpy(arguments->structureOutput, &report, sizeof(report));
     arguments->structureOutputSize = sizeof(report);
-    return status;
-}
-
-IOReturn ELANNativeProbe::collectReport(uint32_t selector, ElanNativeProbeReport *report) {
-    report->abi = ELAN_NATIVE_PROBE_ABI;
-    report->ready = __atomic_load_n(&symbolsReady, __ATOMIC_ACQUIRE);
-    report->uuidMatched = __atomic_load_n(&uuidMatched, __ATOMIC_RELAXED);
-    report->symbols = __atomic_load_n(&symbolMask, __ATOMIC_RELAXED);
-    report->stages = __atomic_load_n(&initializationStages, __ATOMIC_RELAXED);
-    if (ADDPR(startSuccess)) report->stages |= ElanStageLiluStarted;
-    report->permissionsStatus = report->availabilityStatus = report->createStatus = report->deleteStatus = INT32_MIN;
-    auto *matching = serviceMatching("AppleCredentialManager");
-    if (!matching) return kIOReturnNoMemory;
-    IOService *acm = copyMatchingService(matching);
-    matching->release();
-    if (acm) report->stages |= ElanStageACMPresent;
-    IOWorkLoop *workLoop = acm ? acm->getWorkLoop() : nullptr;
-    if (workLoop) report->stages |= ElanStageWorkLoopPresent;
-    IOReturn status = kIOReturnNotReady;
-    if (report->ready && workLoop && ADDPR(startSuccess))
-        status = workLoop->runAction(collectGated, this, reinterpret_cast<void *>(static_cast<uintptr_t>(selector)), report);
-    else if (selector == ElanProbeStatus) status = kIOReturnSuccess;
-    if (acm) acm->release();
-    return status;
-}
-
-IOReturn ELANNativeProbe::collectGated(OSObject *, void *rawSelector, void *rawReport, void *, void *) {
-    auto *report = static_cast<ElanNativeProbeReport *>(rawReport);
-    report->permissionsStatus = getPermissions(3, 1, &report->requiredPermissions);
-    uint8_t availability = 0;
-    report->availabilityStatus = getAvailability(0x2000000000000000ULL, 6, &availability, false);
-    report->availability = availability;
-    if (reinterpret_cast<uintptr_t>(rawSelector) == ElanProbeContextLifecycle) {
-        void *context = nullptr;
-        report->createStatus = createContext(&context);
-        if (!report->createStatus && context) {
-            report->contextsCreated = 1;
-            report->deleteStatus = deleteContext(context, true);
-            report->contextsDeleted = report->deleteStatus == 0;
-        }
-    }
-    return kIOReturnSuccess;
-}
-
-IOReturn ELANNativeProbe::collectStudy(uint32_t selector, NativeCredentialStudyReport *report) {
-    if (!__atomic_load_n(&symbolsReady, __ATOMIC_ACQUIRE) || !studyReady || !ADDPR(startSuccess))
-        return kIOReturnNotReady;
-    IOLockLock(providerLock);
-    if (providerOwner || providerState.restorePending || providerState.quarantined || providerPlatform.attached() || settingsPlatform.attached()) {
-        IOLockUnlock(providerLock); return kIOReturnBusy;
-    }
-    auto *matching = serviceMatching("AppleCredentialManager");
-    if (!matching) { IOLockUnlock(providerLock); return kIOReturnNoMemory; }
-    IOService *acm = copyMatchingService(matching);
-    matching->release();
-    IOWorkLoop *workLoop = acm ? acm->getWorkLoop() : nullptr;
-    IOReturn status = workLoop ? workLoop->runAction(studyGated, this,
-        reinterpret_cast<void *>(static_cast<uintptr_t>(selector)), report) : kIOReturnNotReady;
-    if (acm) acm->release();
-    IOLockUnlock(providerLock);
     return status;
 }
 
@@ -360,6 +461,13 @@ IOReturn ELANNativeProbe::providerACM(uint32_t selector, const void *input, void
 
 IOReturn ELANNativeProbe::providerGated(OSObject *, void *rawSelector, void *input, void *output, void *) {
     uint32_t selector = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(rawSelector));
+    if (selector == ElanProviderStartupTrialArm) {
+        auto &report = *static_cast<NativeStartupTrialReport *>(output);
+        uint8_t availability = 0;
+        int status = getAvailability(0x2000000000000000ULL, 6, &availability, false);
+        report = {1, status ? status : availability == 1 ? 0 : NativeProviderNotActive, 0, 0, 0, 0, 0};
+        return kIOReturnSuccess;
+    }
     if (selector == ElanProviderCatalogBegin || selector == ElanProviderCatalogReplace) {
         auto &report = *static_cast<NativeProviderCatalogReport *>(output);
         const auto &request = *static_cast<const NativeProviderCatalogRequest *>(input);
@@ -367,6 +475,8 @@ IOReturn ELANNativeProbe::providerGated(OSObject *, void *rawSelector, void *inp
             (availabilityRestorePending ? NativeProviderBusy : nativeProviderStartCatalog(providerAPI, providerState, request)) :
             nativeProviderReplaceCatalog(providerState, request);
         nativeProviderCatalogReport(providerAPI, providerState, report);
+        // ABI contract: callback execution always returns IO success; business
+        // failures are in the report, never IO NotReady.
         return kIOReturnSuccess;
     }
     if (selector == ElanProviderAuthorizeEnrollment) {
@@ -385,65 +495,6 @@ IOReturn ELANNativeProbe::providerGated(OSObject *, void *rawSelector, void *inp
     else return kIOReturnBadArgument;
     nativeProviderReport(providerAPI, providerState, report);
     return kIOReturnSuccess;
-}
-
-IOReturn ELANNativeProbe::providerOperation(OSObject *client, uint32_t selector, const void *input, void *output) {
-    if (!__atomic_load_n(&symbolsReady, __ATOMIC_ACQUIRE) || !providerReady || !ADDPR(startSuccess))
-        return kIOReturnNotReady;
-    IOLockLock(providerLock);
-    IOReturn result = kIOReturnSuccess;
-    if (providerOwner && providerOwner != client) result = kIOReturnBusy;
-    else if (selector == ElanProviderBegin || selector == ElanProviderCatalogBegin) {
-        if (providerOwner || providerPlatform.attached() || settingsPlatform.attached()) result = kIOReturnBusy;
-        else {
-            result = providerACM(selector, input, output);
-            if (providerState.active || providerState.restorePending) providerOwner = client;
-        }
-    } else if (selector == ElanProviderMatch || selector == ElanProviderCatalogReplace || selector == ElanProviderAuthorizeEnrollment) {
-        if (providerOwner != client) result = kIOReturnNotOpen;
-        else result = providerACM(selector, input, output);
-    } else if (selector == ElanProviderEnd) {
-        result = providerACM(selector, nullptr, static_cast<NativeProviderReport *>(output));
-        int restored = providerPlatform.restore();
-        int settingsRestored = settingsPlatform.restore();
-        auto *report = static_cast<NativeProviderReport *>(output);
-        if (!report->restoreStatus) report->restoreStatus = restored;
-        if (!report->restoreStatus) report->restoreStatus = settingsRestored;
-        if (!providerState.restorePending && !providerState.quarantined && !providerPlatform.attached() && !settingsPlatform.attached()) providerOwner = nullptr;
-    } else if (selector == ElanProviderPlatformEnable || selector == ElanProviderPlatformRestore) {
-        int status = NativeProviderNotActive;
-        if (selector == ElanProviderPlatformRestore) status = providerPlatform.restore();
-        else if (providerOwner == client && providerState.active)
-            status = providerPlatform.enable(*static_cast<const NativePlatformProcessRequest *>(input));
-        providerPlatform.report(status, *static_cast<NativePlatformProcessReport *>(output));
-    } else if (selector == ElanProviderSettingsEnable || selector == ElanProviderSettingsRestore) {
-        int status = NativeProviderNotActive;
-        if (selector == ElanProviderSettingsRestore) status = settingsPlatform.restore();
-        else if (providerOwner == client && providerState.active)
-            status = settingsPlatform.enableSettings(*static_cast<const NativeSettingsProcessRequest *>(input));
-        settingsPlatform.report(status, *static_cast<NativePlatformProcessReport *>(output));
-    } else result = kIOReturnBadArgument;
-    setProperty("ProviderSessionActive", providerState.active);
-    setProperty("ProviderRestorePending", providerState.restorePending || providerState.quarantined || providerPlatform.pending() || settingsPlatform.pending());
-    IOLockUnlock(providerLock);
-    return result;
-}
-
-void ELANNativeProbe::providerClosed(OSObject *client) {
-    if (!providerLock) return;
-    IOLockLock(providerLock);
-    if (providerOwner == client) {
-        NativeProviderReport report {};
-        IOReturn stopped = providerACM(ElanProviderEnd, nullptr, &report);
-        int restored = providerPlatform.restore();
-        int settingsRestored = settingsPlatform.restore();
-        providerOwner = nullptr;
-        setProperty("ProviderSessionActive", providerState.active);
-        setProperty("ProviderRestorePending", providerState.restorePending || providerState.quarantined || providerPlatform.pending() || settingsPlatform.pending());
-        if (stopped || report.restoreStatus || restored || settingsRestored)
-            SYSLOG("native", "provider cleanup pending: call=0x%x ACM=%d platform=%d settings=%d", stopped, report.restoreStatus, restored, settingsRestored);
-    }
-    IOLockUnlock(providerLock);
 }
 
 IOReturn ELANNativeProbe::studyGated(OSObject *, void *rawSelector, void *rawReport, void *, void *) {
@@ -476,6 +527,12 @@ PluginConfiguration ADDPR(config) {
     KernelVersion::Sequoia, KernelVersion::Sequoia,
     []() {
         __atomic_fetch_or(&initializationStages, ElanStagePluginEntered, __ATOMIC_RELAXED);
+        // Only the official EXEC notification counter is wired here.
+        // No private routes or process-memory observation are enabled.
+        NativeStartupObserverKernel::start(NativeStartupObserverKernel::RuntimeEnabled);
+#ifdef ELAN_AUTOMATIC_SETTINGS
+        if (!elanRegisterSettingsStartup()) SYSLOG("settings","startup registration unavailable");
+#endif
         auto error = lilu.onKextLoad(&acmInfo, 1, acmLoaded);
         if (error != LiluAPI::Error::NoError) {
             ADDPR(startSuccess) = false;

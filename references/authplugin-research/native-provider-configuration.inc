@@ -30,7 +30,7 @@
                     (nativePeerPermissions(self.connection) & NativePeerConfigure) && [controller sessionIsCurrent]) {
                     status = nativeCommitUserConfiguration(controller.session, configuration, context, ^int(NSData *credential) {
                         // Configuration changes require the same private password context as enrollment.
-                        return elanProviderAuthorizeEnrollment(controller.broker, ++controller.sequence, credential.bytes);
+                        return ELAN_NATIVE_AUTHORIZATION_CALL(controller.broker, ++controller.sequence, credential.bytes);
                     });
                 }
                 if (controller.session.invalidated) controller.stopping = YES;

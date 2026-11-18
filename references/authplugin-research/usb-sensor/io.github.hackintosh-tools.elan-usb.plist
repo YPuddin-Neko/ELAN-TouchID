@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.hackintosh-tools.elan-usb</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Library/Application Support/ELANFingerprint/ELANSensorService</string>
+	</array>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>MachServices</key>
+	<dict>
+		<key>io.hackmac.elan.touchid</key>
+		<true/>
+	</dict>
+	<key>LaunchEvents</key>
+	<dict>
+		<key>com.apple.iokit.matching</key>
+		<dict>
+			<key>ELANUsbInterface</key>
+			<dict>
+				<key>IOProviderClass</key>
+				<string>IOUSBHostInterface</string>
+				<key>idVendor</key>
+				<integer>1267</integer>
+				<key>idProduct</key>
+				<integer>3098</integer>
+				<key>bConfigurationValue</key>
+				<integer>1</integer>
+				<key>bInterfaceNumber</key>
+				<integer>0</integer>
+				<key>IOMatchLaunchStream</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>

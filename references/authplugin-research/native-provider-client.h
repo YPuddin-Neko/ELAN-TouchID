@@ -14,6 +14,8 @@ int elanProviderPlatform(int fd, int32_t pid, uint64_t function,
                          uint64_t instanceGetter, uint64_t faultGetter,
                          uint64_t permanentGetter, uint64_t helperClass);
 int elanProviderEnd(int fd);
+int elanProviderStartupTrialArm(int fd, uint64_t nonce);
+int elanProviderStartupTrialCancel(int fd, uint64_t nonce);
 int elanProviderSettings(int fd, int32_t pid, uint64_t function);
 int elanProviderSettingsRestore(int fd);
 #ifdef __cplusplus

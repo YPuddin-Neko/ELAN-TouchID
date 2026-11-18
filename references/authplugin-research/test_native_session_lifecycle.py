@@ -228,6 +228,9 @@ class RuntimeAdapterTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        identity = patch.object(deployment, 'require_kernel_identity')
+        identity.start()
+        self.addCleanup(identity.stop)
         self.runtime = deployment.ManagedProviderRuntime()
         self.runtime.worker_output = self.root / 'provider.out'
         self.runtime.worker_output.write_text('ELAN_PROVIDER ready=1\n')

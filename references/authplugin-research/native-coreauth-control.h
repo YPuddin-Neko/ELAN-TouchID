@@ -2,6 +2,7 @@
 #include <libproc.h>
 #include <sys/proc.h>
 #include <fcntl.h>
+#include "native-coreauth-journal-lock.h"
 
 static constexpr const char *CoreAuthJournal = "/private/var/run/elan-native-provider-501.state";
 struct CoreAuthTarget { uint32_t magic; int32_t pid; uint64_t seconds; uint64_t microseconds; };
@@ -34,8 +35,9 @@ static bool coreAuthGone(const CoreAuthTarget &target) {
     return count == 0 || (count == sizeof(info) &&
            (info.pbi_status == SZOMB || info.pbi_start_tvsec != target.seconds || info.pbi_start_tvusec != target.microseconds));
 }
-static int readCoreAuthJournal(CoreAuthTarget &target) {
-    int fd = open(CoreAuthJournal, O_RDONLY | O_NOFOLLOW);
+static int readCoreAuthJournalLocked(const CoreAuthJournalLock &lock, CoreAuthTarget &target) {
+    if (!lock.held()) { errno = lock.error(); return -1; }
+    int fd = open(CoreAuthJournal, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     if (fd < 0) return errno == ENOENT ? 0 : -1;
     struct stat info {};
     bool valid = !fstat(fd, &info) && S_ISREG(info.st_mode) && info.st_uid == 0 && !(info.st_mode & 077) &&
@@ -43,7 +45,12 @@ static int readCoreAuthJournal(CoreAuthTarget &target) {
                  target.magic == 0x454c414e && target.pid > 1;
     close(fd); return valid ? 1 : -1;
 }
+static int readCoreAuthJournal(CoreAuthTarget &target) {
+    CoreAuthJournalLock lock;
+    return readCoreAuthJournalLocked(lock, target);
+}
 static bool stopCoreAuth(pid_t pid) {
+    CoreAuthJournalLock lock; if (!lock.held()) return false;
     CoreAuthTarget target {}; uint32_t state = 0;
     if (!coreAuthIdentity(pid, target, &state) || state == SSTOP || state == SZOMB) return false;
     int fd = open(CoreAuthJournal, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
@@ -59,9 +66,9 @@ static bool stopCoreAuth(pid_t pid) {
     }
     return false;
 }
-static bool resumeCoreAuth(void) {
+static bool resumeCoreAuthLocked(const CoreAuthJournalLock &lock) {
     CoreAuthTarget target {};
-    if (readCoreAuthJournal(target) != 1) return false;
+    if (readCoreAuthJournalLocked(lock, target) != 1) return false;
     if (coreAuthGone(target)) return true;
     if (!sameCoreAuth(target) || kill(target.pid, SIGCONT)) return false;
     for (unsigned i = 0; i < 100; i++) {
@@ -73,9 +80,14 @@ static bool resumeCoreAuth(void) {
     }
     return false;
 }
+static bool resumeCoreAuth(void) {
+    CoreAuthJournalLock lock;
+    return lock.held() && resumeCoreAuthLocked(lock);
+}
 static bool retireCoreAuth(pid_t pid) {
+    CoreAuthJournalLock lock; if (!lock.held()) return false;
     CoreAuthTarget target {};
-    if (readCoreAuthJournal(target) != 1 || target.pid != pid) return false;
+    if (readCoreAuthJournalLocked(lock, target) != 1 || target.pid != pid) return false;
     if (coreAuthGone(target)) return true;
     if (!sameCoreAuth(target) || kill(pid, SIGTERM)) return false;
     if (!coreAuthGone(target) && sameCoreAuth(target)) kill(pid, SIGCONT);

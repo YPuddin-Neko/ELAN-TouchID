@@ -41,8 +41,11 @@ typedef OSStatus (^ElanCatalogWriter)(NSData *data, BOOL create);
 @property(nonatomic, readonly, nullable) ElanFingerprintCatalog *current;
 - (instancetype)initWithUser:(unsigned)user pid:(unsigned)pid width:(unsigned)width height:(unsigned)height
                       reader:(ElanCatalogReader)reader writer:(ElanCatalogWriter)writer;
+- (instancetype)initWithFileURL:(NSURL *)fileURL user:(unsigned)user pid:(unsigned)pid width:(unsigned)width height:(unsigned)height;
 - (instancetype)initWithUserKeychain:(unsigned)user pid:(unsigned)pid width:(unsigned)width height:(unsigned)height interactive:(BOOL)interactive;
 - (BOOL)load:(NSError **)error;
+- (BOOL)loadWithLegacyReader:(ElanCatalogReader)reader persistMigration:(BOOL)persist error:(NSError **)error;
+- (BOOL)loadSnapshotFromUserKeychain:(NSError **)error;
 - (BOOL)loadOrMigrateLegacy:(ElanCatalogReader)legacyReader error:(NSError **)error;
 - (BOOL)loadOrMigrateLegacyFromUserKeychain:(BOOL)interactive error:(NSError **)error;
 // Creates a separate Keychain item; the caller retains the legacy item for rollback.

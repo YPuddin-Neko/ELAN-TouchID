@@ -7,6 +7,7 @@
 #include <sys/poll.h>
 #include <sys/proc.h>
 #include <notify.h>
+#include <os/log.h>
 #include "native-provider-client.h"
 #include "native-settings-session.h"
 #include "native-user-session-darwin.h"
@@ -19,6 +20,10 @@
 #import "../../elan-fingerprint-macos/src/ElanFingerprintEnrollment.h"
 #include "native-enrollment-progress.h"
 #include "native-enrollment-request.h"
+#ifdef ELAN_SENSOR_SERVICE_BACKEND
+#include "usb-sensor/DirectEnrollmentPolicy.h"
+#define ELAN_NATIVE_AUTHORIZATION_CALL(fd, sequence, context) elanCheckDirectEnrollment(context)
+#endif
 #include "native-protected-configuration.h"
 #define main elan_diagnostic_main
 #include "../../elan-fingerprint-macos/src/elan_match_test.c"
@@ -26,6 +31,12 @@
 #include "../../elan-fingerprint-macos/src/ElanFingerprintStore.inc"
 #include "../../elan-fingerprint-macos/src/ElanEnrollmentCapture.inc"
 #include "test-enrollment-capture.inc"
+#define ELAN_NATIVE_CAPTURE_SAMPLE(s, alreadyClear) captureAfterRelease((s), (alreadyClear))
+#define ELAN_NATIVE_ENROLL_LOG(fmt, ...) os_log_error(OS_LOG_DEFAULT, fmt, ##__VA_ARGS__)
+#ifdef ELAN_SENSOR_SERVICE_BACKEND
+static NSData *elanCachedSettingsBackground;
+#define ELAN_NATIVE_CALIBRATED_BACKGROUND(bg) do { elanCachedSettingsBackground = [(bg) copy]; } while (0)
+#endif
 static volatile sig_atomic_t providerInterrupted;
 static volatile sig_atomic_t providerPowerStopped;
 static void providerInterrupt(int signum) { providerInterrupted = 1; interrupt(signum); }
@@ -173,7 +184,7 @@ static NSUUID *managedIdentityUUID(id identity) {
     BOOL unavailable = self.controller.stopping || !accessory;
     reply(unavailable ? 1 : 0, unavailable ? @[] : @[accessory]);
 }
-- (void)getBioLockoutStateForUser:(unsigned int)user client:(uint64_t)client replyBlock:(void (^)(int, uint64_t))reply {
+- (void)getBioLockoutStateForUser:(unsigned int)user client:(uint64_t)client replyBlock:(void (^)(int, int64_t))reply {
     reply(user == 501 && !self.controller.stopping ? 0 : 1, NativeProviderDeviceReady);
 }
 - (void)getIdentitiesDatabaseHashForUser:(unsigned int)user client:(uint64_t)client replyBlock:(void (^)(NSData *))reply {
@@ -230,7 +241,7 @@ static NSUUID *managedIdentityUUID(id identity) {
             }
             @synchronized (controller) {
                 if (controller.session.invalidated) controller.stopping = YES;
-                if (saved) {
+                if (saved && sensor.bg) {
                     NSData *background = controller.matcher.background;
                     if (background) memcpy(sensor.bg, background.bytes, background.length);
                     else memset(sensor.bg, 0, (size_t)sensor.w * sensor.hgt * sizeof(*sensor.bg));
@@ -580,6 +591,9 @@ static int observePower(BOOL checkOnly, BOOL managed) {
     return result;
 }
 
+#ifdef ELAN_SENSOR_SERVICE_BACKEND
+#include "usb-sensor/SettingsEnrollment.inc"
+#else
 int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc == 2 && !strcmp(argv[1], "--self-test")) return self_test() | template_self_test() | cancellationSelfTest() | enrollmentCaptureSelfTest() | enrollmentControlSelfTest() | userSessionCancellationSelfTest() | powerCancellationSelfTest();
@@ -733,3 +747,5 @@ int main(int argc, char **argv) {
         return result;
     }
 }
+
+#endif

@@ -23,6 +23,22 @@ static unsigned nativePermissionsForPeer(uid_t user, BOOL appleSignature, NSStri
     return permissions;
 }
 
+static BOOL nativeCoreAuthSignedInfo(NSDictionary *info) {
+    static const uint8_t pin[20] = {
+        0x69, 0x82, 0x84, 0x36, 0xa4, 0x85, 0x0c, 0x9b, 0x85, 0x6c,
+        0x51, 0xc6, 0xf9, 0xb0, 0x67, 0x2c, 0x2a, 0x50, 0x39, 0x74
+    };
+    if (![info isKindOfClass:NSDictionary.class]) return NO;
+    NSURL *path = info[(__bridge id)kSecCodeInfoMainExecutable];
+    NSData *hash = info[(__bridge id)kSecCodeInfoUnique];
+    NSString *identifier = info[(__bridge id)kSecCodeInfoIdentifier];
+    return [identifier isEqual:@"com.apple.coreauthd"] &&
+        [path isKindOfClass:NSURL.class] && path.isFileURL &&
+        [path.path isEqual:@"/System/Library/Frameworks/LocalAuthentication.framework/Support/coreauthd"] &&
+        [hash isKindOfClass:NSData.class] && hash.length == sizeof(pin) &&
+        !memcmp(hash.bytes, pin, sizeof(pin));
+}
+
 static unsigned nativePeerPermissions(NSXPCConnection *connection) {
     if (!connection || connection.effectiveUserIdentifier != 501 || ![connection respondsToSelector:@selector(auditToken)]) return 0;
     audit_token_t token = [connection auditToken];
@@ -30,13 +46,20 @@ static unsigned nativePeerPermissions(NSXPCConnection *connection) {
     SecCodeRef code = NULL;
     SecRequirementRef requirement = NULL;
     CFDictionaryRef information = NULL;
-    OSStatus status = SecCodeCopyGuestWithAttributes(NULL, (__bridge CFDictionaryRef)attributes, kSecCSDefaultFlags, &code);
-    if (!status) status = SecRequirementCreateWithString(CFSTR("anchor apple"), kSecCSDefaultFlags, &requirement);
-    if (!status) status = SecCodeCheckValidity(code, kSecCSDefaultFlags, requirement);
-    if (!status) status = SecCodeCopySigningInformation(code, kSecCSSigningInformation, &information);
+    OSStatus guestStatus = SecCodeCopyGuestWithAttributes(NULL, (__bridge CFDictionaryRef)attributes, kSecCSDefaultFlags, &code);
+    OSStatus validStatus = guestStatus;
+    if (!validStatus) validStatus = SecRequirementCreateWithString(CFSTR("anchor apple"), kSecCSDefaultFlags, &requirement);
+    if (!validStatus) validStatus = SecCodeCheckValidity(code, kSecCSDefaultFlags, requirement);
+    OSStatus infoStatus = code ? SecCodeCopySigningInformation(code, kSecCSSigningInformation, &information) : errSecInvalidPointer;
     NSDictionary *info = CFBridgingRelease(information);
-    unsigned permissions = nativePermissionsForPeer(connection.effectiveUserIdentifier, status == errSecSuccess,
-        info[(__bridge id)kSecCodeInfoIdentifier], info[(__bridge id)kSecCodeInfoEntitlementsDict]);
+    unsigned permissions = 0;
+    if (!validStatus && !infoStatus) {
+        permissions = nativePermissionsForPeer(connection.effectiveUserIdentifier, YES,
+            info[(__bridge id)kSecCodeInfoIdentifier], info[(__bridge id)kSecCodeInfoEntitlementsDict]);
+    }
+    if (!permissions && !guestStatus && !infoStatus && nativeCoreAuthSignedInfo(info)) {
+        permissions = NativePeerRead | NativePeerMatch;
+    }
     if (requirement) CFRelease(requirement);
     if (code) CFRelease(code);
     return permissions;

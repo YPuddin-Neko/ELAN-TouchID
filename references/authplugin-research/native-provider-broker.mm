@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include "native-controller-lease.h"
+#include "native-broker-stop.h"
 #include <errno.h>
 #include <time.h>
 #include "native-provider-wire.h"
@@ -88,15 +89,20 @@ static int identitySelfTest(void) {
     return !status && own && !wrong ? 0 : 1;
 }
 
-static bool transfer(int fd, void *bytes, size_t length, bool writing) {
+enum class NativeBrokerTransfer { Complete, Stopped, EndOfStream, Error };
+
+static NativeBrokerTransfer transfer(int fd, void *bytes, size_t length, bool writing) {
     uint8_t *cursor = static_cast<uint8_t *>(bytes);
-    while (length && !stopping) {
-        ssize_t count = writing ? write(fd, cursor, length) : read(fd, cursor, length);
+    size_t remaining = length;
+    while (remaining) {
+        if (stopping) return remaining == length ? NativeBrokerTransfer::Stopped : NativeBrokerTransfer::Error;
+        ssize_t count = writing ? write(fd, cursor, remaining) : read(fd, cursor, remaining);
         if (count < 0 && errno == EINTR) continue;
-        if (count <= 0) return false;
-        cursor += count; length -= static_cast<size_t>(count);
+        if (!count && !writing && remaining == length) return NativeBrokerTransfer::EndOfStream;
+        if (count <= 0) return NativeBrokerTransfer::Error;
+        cursor += count; remaining -= static_cast<size_t>(count);
     }
-    return length == 0;
+    return NativeBrokerTransfer::Complete;
 }
 
 static bool removeStaleSocket(void) {
@@ -136,10 +142,15 @@ static int settingsControlSelfTest(void) {
     char path[PROC_PIDPATHINFO_MAXSIZE] = {};
     SettingsTarget target {};
     bool denied = !settingsIdentity(getpid(), target);
-    uint64_t mapping = proc_pidpath(getpid(), path, sizeof(path)) > 0 ? executableMapping(getpid(), path) : 0;
+    ExecutableMappingDiagnostics trace {}, missing {};
+    uint64_t mapping = proc_pidpath(getpid(), path, sizeof(path)) > 0 ? executableMapping(getpid(), path, &trace) : 0;
     bool found = mapping && mapping == reinterpret_cast<uint64_t>(_dyld_get_image_header(0));
-    printf("SETTINGS_CONTROL_TEST own_image_found=%d ordinary_process_rejected=%d kernel_opened=0 processes_stopped=0\n", found, denied);
-    return found && denied ? 0 : 1;
+    bool traced = !strcmp(trace.outcome, "found") && trace.regions && trace.pathMatches && trace.headerMatches;
+    bool notFound = !executableMapping(getpid(), "/__elan_nonexistent_executable__", &missing) &&
+                    strcmp(missing.outcome, "found") && !missing.pathMatches && !missing.headerMatches;
+    printf("SETTINGS_CONTROL_TEST own_image_found=%d ordinary_process_rejected=%d mapping_diagnostics=%d missing_path_rejected=%d kernel_opened=0 processes_stopped=0\n",
+           found, denied, traced, notFound);
+    return found && denied && traced && notFound ? 0 : 1;
 }
 
 static int recoverProvider(io_connect_t connection, NativeProviderReport *final = nullptr) {
@@ -160,12 +171,17 @@ static int recoverProvider(io_connect_t connection, NativeProviderReport *final 
     bool restored = platformValid && !status && length == sizeof(report) && report.abi == 1 && !report.operationStatus &&
                     !report.restoreStatus && !report.restorePending && !report.quarantinedContext && !report.active &&
                     report.availability == 0;
-    CoreAuthTarget target {};
-    int journal = readCoreAuthJournal(target);
-    if (restored && platformValid && journal == 1) {
-        restored = coreAuthGone(target) || resumeCoreAuth();
-        if (restored && unlink(CoreAuthJournal)) restored = false;
-    } else if (journal < 0) restored = false;
+    {
+        CoreAuthJournalLock journalLock;
+        CoreAuthTarget target {};
+        int journal = readCoreAuthJournalLocked(journalLock, target);
+        if (restored && platformValid && journal == 1) {
+            restored = coreAuthGone(target) || resumeCoreAuthLocked(journalLock);
+            CoreAuthTarget latest {};
+            if (restored && (readCoreAuthJournalLocked(journalLock, latest) != 1 ||
+                memcmp(&target, &latest, sizeof(target)) || unlink(CoreAuthJournal))) restored = false;
+        } else if (journal < 0) restored = false;
+    }
     restored = restored && !settingsStatus;
     if (!restored && !report.restoreStatus) report.restoreStatus = -33008;
     if (final) *final = report;
@@ -190,6 +206,14 @@ static bool brokerSessionCurrent(bool pinned) {
     return true;
 }
 
+static NativeBrokerStop brokerStop(bool managed, time_t deadline) {
+    if (managed) {
+        NativeBrokerStop lease = nativeBrokerControllerStop(STDIN_FILENO);
+        if (lease != NativeBrokerStop::Running) return lease;
+    }
+    return stopping || (!managed && time(nullptr) >= deadline) ? NativeBrokerStop::Normal : NativeBrokerStop::Running;
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc == 2 && !strcmp(argv[1], "--peer-self-test")) return identitySelfTest();
@@ -204,9 +228,10 @@ int main(int argc, char **argv) {
             printf("CONTROLLER_LEASE ended=%d kernel_opened=0\n", ended);
             return ended ? 0 : 1;
         }
-        bool managed = argc == 2 && !strcmp(argv[1], "--serve-managed");
-        if (argc != 2 || (!managed && strcmp(argv[1], "--serve") && strcmp(argv[1], "--recover"))) return 2;
-        if (managed && (!nativeControllerLeaseValid(STDIN_FILENO) || !nativeControllerLeaseAlive(STDIN_FILENO))) return 2;
+        bool connectionRecoveryEnabled = argc == 2 && !strcmp(argv[1], "--serve-managed-settings-recovery");
+        bool managed = connectionRecoveryEnabled || (argc == 2 && !strcmp(argv[1], "--serve-managed"));
+        if (argc != 2 || (!managed && !connectionRecoveryEnabled && strcmp(argv[1], "--serve") && strcmp(argv[1], "--recover"))) return 2;
+        if (managed && (!nativeControllerLeaseValid(STDIN_FILENO) || nativeBrokerControllerStop(STDIN_FILENO) != NativeBrokerStop::Running)) return 2;
         if (geteuid() != 0) { puts("PROVIDER_BROKER root_required=1"); return 3; }
         setbuf(stdout, nullptr);
         signal(SIGINT, stopSignal); signal(SIGTERM, stopSignal); signal(SIGPIPE, SIG_IGN);
@@ -239,25 +264,31 @@ int main(int argc, char **argv) {
             if (chown(NativeProviderSocket, 501, 20) || chmod(NativeProviderSocket, 0600) || listen(listener, 2)) break;
             printf("PROVIDER_BROKER ready=1 lifetime_seconds=%d controller_bound=%d\n", managed ? 0 : 960, managed);
             time_t deadline = time(nullptr) + 960;
-            while (!stopping && (managed ? nativeControllerLeaseAlive(STDIN_FILENO) : time(nullptr) < deadline) && peer < 0) {
+            while (peer < 0) {
+                NativeBrokerStop stop = brokerStop(managed, deadline);
+                if (stop != NativeBrokerStop::Running) { result = stop == NativeBrokerStop::Normal ? 0 : 1; break; }
                 if (!brokerSessionCurrent(false)) { result = 0; break; }
                 pollfd descriptor {listener, POLLIN, 0};
                 int ready = poll(&descriptor, 1, 250);
                 if (ready < 0 && errno == EINTR) continue;
                 if (ready < 0) break;
                 if (!ready) continue;
+                if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) || !(descriptor.revents & POLLIN)) break;
                 int candidate = accept(listener, nullptr, nullptr);
+                if (candidate < 0 && errno == EINTR) continue;
                 if (candidate < 0) break;
                 if (!allowedPeer(candidate, expected)) { close(candidate); puts("PROVIDER_BROKER rejected_peer=1"); continue; }
                 peer = candidate;
             }
             if (peer < 0) break;
             timeval timeout {3, 0};
-            setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-            setsockopt(peer, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+            if (setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+                setsockopt(peer, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) break;
             puts("PROVIDER_BROKER verified_worker=1");
             time_t nextSessionCheck = 0;
-            while (!stopping && (managed ? nativeControllerLeaseAlive(STDIN_FILENO) : time(nullptr) < deadline)) {
+            while (true) {
+                NativeBrokerStop stop = brokerStop(managed, deadline);
+                if (stop != NativeBrokerStop::Running) { result = stop == NativeBrokerStop::Normal ? 0 : 1; break; }
                 if (time(nullptr) >= nextSessionCheck) {
                     if (!brokerSessionCurrent(true)) { result = 0; break; }
                     nextSessionCheck = time(nullptr) + 1;
@@ -267,12 +298,15 @@ int main(int argc, char **argv) {
                 if (ready < 0 && errno == EINTR) continue;
                 if (ready < 0) break;
                 if (!ready) continue;
+                if ((descriptor.revents & (POLLERR | POLLNVAL)) || !(descriptor.revents & (POLLIN | POLLHUP))) break;
                 NativeProviderWireRequest request {};
-                if (!transfer(peer, &request, sizeof(request), false)) { result = 0; break; }
+                NativeBrokerTransfer received = transfer(peer, &request, sizeof(request), false);
+                if (received != NativeBrokerTransfer::Complete) { result = received == NativeBrokerTransfer::Error ? 1 : 0; break; }
                 if (!allowedPeer(peer, expected) || request.magic != NativeProviderWireMagic || request.reserved ||
                     !nativeProviderIsSelector(request.selector) ||
                     request.length != nativeProviderInputSize(request.selector)) break;
-                if (managed && !nativeControllerLeaseAlive(STDIN_FILENO)) break;
+                stop = brokerStop(managed, deadline);
+                if (stop != NativeBrokerStop::Running) { result = stop == NativeBrokerStop::Normal ? 0 : 1; break; }
                 if (request.selector != ElanProviderEnd && request.selector != ElanProviderSettingsRestore &&
                     !brokerSessionCurrent(true)) { result = 0; break; }
                 NativeProviderWireReply reply {};
@@ -282,19 +316,61 @@ int main(int argc, char **argv) {
                     recoverProvider(connection, &reply.data.provider);
                 } else if (request.selector == ElanProviderSettingsRestore) {
                     if (recoverSettings(connection, reply.data.platform)) reply.callStatus = kIOReturnError;
+                } else if (request.selector == ElanProviderSettingsInspect || request.selector == ElanProviderSettingsRecover) {
+                    // The diagnostic runs only inside the broker-owned stopped-process window.
+                    reply.callStatus = kIOReturnNotPermitted;
                 } else if (request.selector == ElanProviderSettingsEnable) {
                     auto &settings = request.data.settings;
                     bool ownedAttempt = false;
                     if (settings.image || settings.abi != 1 || settings.user != 501 || settings.reserved || !stopSettings(settings.pid, ownedAttempt)) {
                         reply.callStatus = kIOReturnNotPermitted;
+                        printf("PROVIDER_BROKER settings_stage=admission call=0x%x owned_attempt=%d\n",
+                               reply.callStatus, ownedAttempt);
+                        fflush(stdout);
                         if (ownedAttempt) {
                             NativePlatformProcessReport restored {};
                             if (recoverSettings(connection, restored)) reply.callStatus = kIOReturnError;
                         }
                     } else {
-                        settings.image = executableMapping(settings.pid, SettingsExecutable);
-                        reply.callStatus = settings.image ? IOConnectCallStructMethod(connection, request.selector,
-                            &request.data, request.length, &reply.data, &output) : kIOReturnBadArgument;
+                        ExecutableMappingDiagnostics mapping {};
+                        settings.image = executableMapping(settings.pid, SettingsExecutable, &mapping);
+                        // Record only counters and protocol status, never process addresses or biometric data.
+                        printf("PROVIDER_BROKER settings_stage=mapping outcome=%s regions=%u path_matches=%u header_matches=%u query_bytes=%d query_errno=%d found=%d\n",
+                               mapping.outcome, mapping.regions, mapping.pathMatches, mapping.headerMatches,
+                               mapping.queryBytes, mapping.queryError, settings.image != 0);
+                        NativeSettingsInspectionReport inspection {};
+                        size_t inspectionSize = sizeof(inspection);
+                        kern_return_t inspectionCall = settings.image ? IOConnectCallStructMethod(connection,
+                            ElanProviderSettingsInspect, &settings, sizeof(settings), &inspection, &inspectionSize) : kIOReturnBadArgument;
+                        bool recoveryRequested = nativeSettingsInspectionAllowsRecovery(inspectionCall, inspectionSize, inspection, connectionRecoveryEnabled);
+                        bool inspectionAllowed = nativeSettingsInspectionAllowsEnable(inspectionCall, inspectionSize, inspection) || recoveryRequested;
+                        printf("PROVIDER_BROKER settings_stage=connection_inspection call=0x%x status=%d image_matched=%u observation=%u stage=%u allowed=%d\n",
+                               inspectionCall, inspection.status, inspection.imageMatched, inspection.observation, inspection.stage, inspectionAllowed);
+                        // Stop before mutation if the connection was already initialized or could not be verified.
+                        NativeSettingsRecoveryReport recoveryReport {};
+                        size_t recoverySize = sizeof(recoveryReport);
+                        reply.callStatus = inspectionAllowed ? IOConnectCallStructMethod(connection, recoveryRequested ? ElanProviderSettingsRecover : request.selector,
+                            &request.data, request.length, recoveryRequested ? static_cast<void *>(&recoveryReport) : static_cast<void *>(&reply.data),
+                            recoveryRequested ? &recoverySize : &output) : kIOReturnNotReady;
+                        if (recoveryRequested) {
+                            bool valid = nativeSettingsRecoveryReportValid(reply.callStatus, recoverySize, recoveryReport);
+                            if (valid) reply.data.platform = recoveryReport.platform;
+                            else if (!reply.callStatus) reply.callStatus = kIOReturnBadArgument;
+                            // Worker selector 13 keeps its original 32-byte reply.
+                            output = sizeof(NativePlatformProcessReport);
+                            bool confirmed = valid && !recoveryReport.transactionStatus && recoveryReport.platform.restartRequired;
+                            int recoveryStatus = reply.callStatus ? static_cast<int32_t>(reply.callStatus) : recoveryReport.transactionStatus;
+                            if (valid)
+                                printf("PROVIDER_BROKER settings_stage=connection_recovery attempted=1 status=%d modified=%s phase=%u rollback_status=%d\n",
+                                       recoveryStatus, confirmed ? "1" : "unknown", recoveryReport.phase, recoveryReport.rollbackStatus);
+                            else
+                                printf("PROVIDER_BROKER settings_stage=connection_recovery attempted=1 status=%d modified=unknown\n", recoveryStatus);
+                        }
+                        printf("PROVIDER_BROKER settings_stage=%s call=0x%x input_bytes=%u expected_input=%zu output_bytes=%zu expected_output=%zu reply_abi=%u operation_status=%d\n",
+                               settings.image ? "kernel" : "mapping_rejected", reply.callStatus,
+                               request.length, sizeof(NativeSettingsProcessRequest), output,
+                               sizeof(NativePlatformProcessReport), reply.data.platform.abi, reply.data.platform.status);
+                        fflush(stdout);
                         bool enabled = !reply.callStatus && output == sizeof(NativePlatformProcessReport) &&
                             reply.data.platform.abi == 1 && !reply.data.platform.status && reply.data.platform.restartRequired;
                         if (enabled) {
@@ -324,7 +400,8 @@ int main(int argc, char **argv) {
                 reply.length = static_cast<uint32_t>(output);
                 memset(&request.data, 0, sizeof(request.data));
                 printf("PROVIDER_BROKER selector=%u call=0x%x\n", request.selector, reply.callStatus);
-                if (!transfer(peer, &reply, sizeof(reply), true)) break;
+                NativeBrokerTransfer sent = transfer(peer, &reply, sizeof(reply), true);
+                if (sent != NativeBrokerTransfer::Complete) { result = sent == NativeBrokerTransfer::Error ? 1 : 0; break; }
             }
         } while (false);
         if (peer >= 0) { shutdown(peer, SHUT_RDWR); close(peer); }

@@ -30,7 +30,7 @@ class InstallationUpgradeTests(unittest.TestCase):
         self.published = []
         for name, value in [('PACKAGE', self.package), ('INSTALL', self.install), ('DESKTOP', self.desktop), ('ASSETS', ['asset'])]:
             self.stack.enter_context(patch.object(deployment, name, value))
-        for name in ['require_root', 'verify_signatures', 'secure_tree', 'previous_cleanup', 'namespace_preflight']:
+        for name in ['require_root', 'verify_signatures', 'require_kernel_artifact', 'secure_tree', 'previous_cleanup', 'namespace_preflight']:
             self.stack.enter_context(patch.object(deployment, name))
         self.stack.enter_context(patch.object(deployment.os, 'chown'))
         self.stack.enter_context(patch.object(deployment, 'publish', side_effect=self.publish))
@@ -213,6 +213,29 @@ class JobUnloadTests(unittest.TestCase):
 
 
 class SettingsResultTests(unittest.TestCase):
+    def test_attach_error_preserves_exact_iokit_code(self):
+        with self.assertRaisesRegex(RuntimeError, r'Settings attach failed: -536870206 \(0xe00002c2\)'):
+            deployment.validate_settings_integration('settings_attach=-536870206 pid=4190\n')
+
+    def test_success_and_empty_integration_logs(self):
+        for value in ['', 'settings_attach=0 pid=23\nsettings_restore=0\n']:
+            deployment.validate_settings_integration(value)
+
+    def test_restore_error_at_end_of_capture(self):
+        with self.assertRaisesRegex(RuntimeError, 'Settings restore failed: -1'):
+            deployment.validate_settings_integration('settings_restore=-1')
+
+    def test_no_answer_does_not_mask_attach_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'worker.out'
+            output.write_text('')
+            def answer(_):
+                output.write_text('settings_attach=-536870206 pid=4190\n')
+                return 'n'
+            with patch('builtins.input', side_effect=answer):
+                with self.assertRaisesRegex(RuntimeError, '0xe00002c2'):
+                    deployment.settings_steps(output, {})
+
     identity = '12345678-1234-1234-1234-123456789ABC'
 
     def test_original_settings_peer_is_required(self):

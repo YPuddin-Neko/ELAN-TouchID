@@ -1,5 +1,6 @@
 #include "native-provider-client.h"
 #include "native-provider-wire.h"
+#include "native-enrollment-report-validation.h"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -81,16 +82,15 @@ int elanProviderReplaceCatalog(int fd, uint64_t sequence, const uint8_t *identit
 int elanProviderAuthorizeEnrollment(int fd, uint64_t sequence, const uint8_t context[16]) {
     if (!sequence || !context || !nativeNonzeroBytes(context, 16)) return NativeProviderInvalid;
     NativeEnrollmentRequest request {};
-    request.abi = 1; request.user = 501; request.sequence = sequence;
+    request.abi = 3; request.user = 501; request.sequence = sequence;
     memcpy(request.context, context, 16);
     NativeProviderWireReply reply {};
     int status = exchange(fd, ElanProviderAuthorizeEnrollment, &request, reply);
     if (status) return status;
     const auto &value = reply.data.enrollment;
-    return value.abi == 1 && !value.operationStatus && value.active == 1 && value.sequence == sequence &&
-        value.authorized == 1 && value.ownerPolicy == 1 && !value.wrongUserPolicy && !value.reserved &&
-        value.passwordCredentialTypes && !(value.passwordCredentialTypes & ~3U) ? 0 :
-        value.operationStatus ? value.operationStatus : -33009;
+    if (!nativeEnrollmentReportValid(value, sequence)) return -33009;
+    return value.operationStatus;
+
 }
 int elanProviderMatch(int fd, uint64_t sequence, const uint8_t identity[16], const uint8_t context[16], bool matched) {
     NativeProviderRequest request {};
@@ -144,3 +144,20 @@ int elanProviderSettingsRestore(int fd) {
     return value.abi == 1 && !value.status && !value.attached && !value.restorePending && !value.restartRequired &&
         !value.pid && !value.reserved ? 0 : value.status ? value.status : -33011;
 }
+
+static int startupTrialExchange(int fd, uint32_t selector, uint64_t nonce) {
+    if (!nonce) return NativeProviderInvalid;
+    NativeStartupTrialRequest request {1, 501, nonce};
+    NativeProviderWireReply reply {};
+    int status = exchange(fd, selector, &request, reply);
+    if (status) return status;
+    const auto &value = reply.data.startupTrial;
+    if (value.abi != 1 || value.nonce != nonce || value.armed > 1 || value.inFlight > 1 ||
+        value.cancelled > 1 || value.recoveryRequired > 1) return -33002;
+    if (value.status) return value.status;
+    if (selector == ElanProviderStartupTrialArm && (!value.armed || value.inFlight || value.cancelled || value.recoveryRequired)) return -33003;
+    if (selector == ElanProviderStartupTrialCancel && (!value.cancelled || value.armed)) return -33003;
+    return 0;
+}
+int elanProviderStartupTrialArm(int fd, uint64_t nonce) { return startupTrialExchange(fd, ElanProviderStartupTrialArm, nonce); }
+int elanProviderStartupTrialCancel(int fd, uint64_t nonce) { return startupTrialExchange(fd, ElanProviderStartupTrialCancel, nonce); }

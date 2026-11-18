@@ -28,12 +28,13 @@ static int runStudy(io_connect_t connection, uint32_t selector) {
 }
 
 int main(int argc, char **argv) {
+    bool readiness = argc == 2 && !strcmp(argv[1], "--readiness");
     bool lifecycle = argc == 2 && !strcmp(argv[1], "--context-lifecycle");
     uint32_t study = argc != 2 ? 0 : !strcmp(argv[1], "--credential-study") ? ElanProbeCredentialStudy :
         !strcmp(argv[1], "--policy-study") ? ElanProbePolicyStudy :
         !strcmp(argv[1], "--restore-study-availability") ? ElanProbeRestoreAvailability : 0;
-    if (argc != 2 || (!lifecycle && !study && strcmp(argv[1], "--status"))) {
-        fprintf(stderr, "Usage: %s --status | --context-lifecycle | --credential-study | --policy-study | --restore-study-availability\n", argv[0]);
+    if (argc != 2 || (!readiness && !lifecycle && !study && strcmp(argv[1], "--status"))) {
+        fprintf(stderr, "Usage: %s --readiness | --status | --context-lifecycle | --credential-study | --policy-study | --restore-study-availability\n", argv[0]);
         return 2;
     }
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(ELAN_NATIVE_PROBE_SERVICE));
@@ -42,6 +43,14 @@ int main(int argc, char **argv) {
     kern_return_t status = IOServiceOpen(service, mach_task_self(), 0, &connection);
     IOObjectRelease(service);
     if (status) { printf("ELAN_KERNEL_PROBE open_status=0x%x uid=%u\n", status, getuid()); return 4; }
+    if (readiness) {
+        NativeReadinessReport report {}; size_t length = sizeof(report);
+        status = IOConnectCallStructMethod(connection, ElanProbeReadiness, nullptr, 0, &report, &length);
+        IOServiceClose(connection);
+        printf("ELAN_READINESS call_status=0x%x abi=%u length=%zu stage=%u failure=%u symbols=%u provider=%u lilu=%u retirement=%u platform=%u busy=%u session=%u pending=%u owner=%u coreauth_attached=%u settings_attached=%u committed=%u\n",
+            status,report.abi,length,report.stage,report.failure,report.symbolsReady,report.providerReady,report.liluStarted,report.retirementReady,report.platformReady,report.gateBusy,report.sessionActive,report.restorePending,report.ownerPresent,report.platformAttached,report.settingsAttached,report.trialCommitted);
+        return status || length != sizeof(report) || report.abi != 1 || report.reserved ? 1 : 0;
+    }
     if (study) {
         int result = runStudy(connection, study);
         IOServiceClose(connection);
