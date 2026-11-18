@@ -2,11 +2,24 @@
 
 为无 T2 芯片的 Intel 黑苹果实现 ELAN USB 指纹传感器（`04f3:0c1a`）的 macOS 原生触控 ID 驱动栈，打通 `BiometricKit`、`AppleCredentialManager`、`LocalAuthentication` 与 `loginwindow`。
 
-## 适用环境
+## 电脑配置
 
-- **指纹硬件**：ELAN USB 指纹模块（`VID: 0x04f3`，`PID: 0x0c1a`，144 × 64）
-- **操作系统**：macOS Sequoia 15.8.1（Build `24H32`，Intel `x86_64`）
-- **引导环境**：OpenCore + `Lilu.kext`
+### TM1963
+
+| 规格     | 详细信息                                                   |
+| -------- | ---------------------------------------------------------- |
+| 电脑型号 | 小米笔记本电脑Pro 15.6'' (MX250)                           |
+| 处理器   | 英特尔 酷睿 i7-10510U 处理器                               |
+| 内存     | 16GB 三星 DDR4 2666MHz                                     |
+| 硬盘     | 英特尔 SSD 660P 系列                                       |
+| 集成显卡 | 英特尔 超高清显卡 620                                      |
+| 显示器   | LQ156M1JW01 SHP14C3 1920x1080 344x194mm 15.5-inch          |
+| 声卡     | 瑞昱 ALC256 (节点: 69)                                     |
+| 无线网卡 | 英特尔 Wireless-AC 9462                                    |
+| 触控板   | ELAN2303                                                   |
+| 指纹模块 | ELAN USB Fingerprint (`04f3:0c1a`，144 × 64，固件 `0x0142`) |
+| 操作系统 | macOS Sequoia 15.8.1 (Build `24H32`，Intel `x86_64`)       |
+| 引导环境 | OpenCore + `Lilu.kext`                                     |
 
 无 T2 芯片的 Intel 平台不含硬件安全隔区（SEP），不支持 FileVault 预启动解锁，冷启动首次登录需输入密码。
 
