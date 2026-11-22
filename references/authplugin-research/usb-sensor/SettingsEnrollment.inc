@@ -5,6 +5,8 @@
 #import <AppKit/AppKit.h>
 #import <OpenDirectory/OpenDirectory.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
+#include <mach-o/dyld.h>
+#include <fcntl.h>
 #include <pwd.h>
 #include <sys/stat.h>
 
@@ -90,6 +92,153 @@ static NSURL *elanUnlockSecretURL(void) {
         URLByAppendingPathComponent:@".unlock-secret" isDirectory:NO];
 }
 
+static NSURL *elanServiceExecutableURL(void) {
+    return [[elanCatalogFileURL() URLByDeletingLastPathComponent]
+        URLByAppendingPathComponent:@"ELANSensorService" isDirectory:NO];
+}
+
+static NSURL *elanLaunchAgentPlistURL(void) {
+    struct passwd *pw = getpwuid(getuid());
+    NSString *home = (pw && pw->pw_dir && pw->pw_dir[0]) ?
+        [NSString stringWithUTF8String:pw->pw_dir] : NSHomeDirectory();
+    NSString *path = [home stringByAppendingPathComponent:
+        @"Library/LaunchAgents/io.github.hackintosh-tools.elan-usb.plist"];
+    return [NSURL fileURLWithPath:path isDirectory:NO];
+}
+
+static void elanSetFileImmutable(NSURL *url, BOOL immutable) {
+    if (!url.isFileURL || !url.path.length) return;
+    const char *path = url.fileSystemRepresentation;
+    if (!path) return;
+    struct stat st = {};
+    if (lstat(path, &st) != 0 || st.st_uid != getuid() || !S_ISREG(st.st_mode)) return;
+    uint32_t desired = immutable ? (st.st_flags | (uint32_t)UF_IMMUTABLE) : (st.st_flags & ~(uint32_t)UF_IMMUTABLE);
+    if (st.st_flags != desired) (void)chflags(path, desired);
+}
+
+static BOOL elanWriteProtectedDataAtomically(NSData *data, NSURL *url, mode_t mode) {
+    if (!data || !url.isFileURL || !url.path.length) return NO;
+    [[NSFileManager defaultManager] createDirectoryAtURL:[url URLByDeletingLastPathComponent]
+                             withIntermediateDirectories:YES
+                                              attributes:@{NSFilePosixPermissions: @0700}
+                                                   error:nil];
+    elanSetFileImmutable(url, NO);
+    BOOL ok = [data writeToURL:url options:NSDataWritingAtomic error:nil];
+    if (ok) {
+        chmod(url.path.fileSystemRepresentation, mode);
+    }
+    elanSetFileImmutable(url, YES);
+    return ok;
+}
+
+static NSDictionary *elanExpectedLaunchAgentPlist(void) {
+    NSString *programPath = elanServiceExecutableURL().path;
+    return @{
+        @"Label": @"io.github.hackintosh-tools.elan-usb",
+        @"ProgramArguments": @[programPath],
+        @"LimitLoadToSessionType": @"Aqua",
+        @"RunAtLoad": @YES,
+        @"KeepAlive": @YES,
+        @"MachServices": @{@"io.hackmac.elan.touchid": @YES},
+        @"LaunchEvents": @{
+            @"com.apple.iokit.matching": @{
+                @"ELANUsbInterface": @{
+                    @"IOProviderClass": @"IOUSBHostInterface",
+                    @"idVendor": @1267,
+                    @"idProduct": @3098,
+                    @"bConfigurationValue": @1,
+                    @"bInterfaceNumber": @0,
+                    @"IOMatchLaunchStream": @YES,
+                }
+            }
+        }
+    };
+}
+
+static BOOL elanRunningAsInstalledService(void) {
+    char execPath[PATH_MAX] = {};
+    uint32_t size = sizeof(execPath);
+    if (_NSGetExecutablePath(execPath, &size) != 0) return NO;
+    char resolvedActual[PATH_MAX] = {};
+    char resolvedExpected[PATH_MAX] = {};
+    const char *expected = elanServiceExecutableURL().fileSystemRepresentation;
+    if (!expected || !realpath(execPath, resolvedActual) || !realpath(expected, resolvedExpected)) return NO;
+    return strcmp(resolvedActual, resolvedExpected) == 0;
+}
+
+static void elanEnsureLaunchAgentPlistAndLock(void) {
+    NSURL *serviceURL = elanServiceExecutableURL();
+    if (![[NSFileManager defaultManager] isExecutableFileAtPath:serviceURL.path]) return;
+    elanSetFileImmutable(serviceURL, YES);
+    NSURL *agentURL = elanLaunchAgentPlistURL();
+    NSDictionary *expected = elanExpectedLaunchAgentPlist();
+    NSDictionary *current = [NSDictionary dictionaryWithContentsOfURL:agentURL];
+    if (![current isEqualToDictionary:expected]) {
+        [[NSFileManager defaultManager] createDirectoryAtURL:[agentURL URLByDeletingLastPathComponent]
+                                 withIntermediateDirectories:YES
+                                                  attributes:@{NSFilePosixPermissions: @0755}
+                                                       error:nil];
+        NSData *xml = [NSPropertyListSerialization dataWithPropertyList:expected
+                                                                 format:NSPropertyListXMLFormat_v1_0
+                                                                options:0
+                                                                  error:nil];
+        if (xml) {
+            elanSetFileImmutable(agentURL, NO);
+            if ([xml writeToURL:agentURL options:NSDataWritingAtomic error:nil]) {
+                chmod(agentURL.path.fileSystemRepresentation, 0644);
+                ELAN_SETTINGS_DIAGNOSTIC("launch-agent-restored", (int)xml.length);
+            }
+        }
+    }
+    elanSetFileImmutable(agentURL, YES);
+}
+
+static dispatch_source_t elanAgentVnodeSource;
+static void elanArmLaunchAgentVnodeWatch(void) {
+    if (elanAgentVnodeSource) {
+        dispatch_source_cancel(elanAgentVnodeSource);
+        elanAgentVnodeSource = nil;
+    }
+    const char *path = elanLaunchAgentPlistURL().fileSystemRepresentation;
+    if (!path) return;
+    int fd = open(path, O_EVTONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    uintptr_t mask = DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_WRITE | DISPATCH_VNODE_ATTRIB;
+    dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, (uintptr_t)fd, mask, dispatch_get_main_queue());
+    if (!src) {
+        close(fd);
+        return;
+    }
+    dispatch_source_set_event_handler(src, ^{
+        @autoreleasepool {
+            uintptr_t flags = dispatch_source_get_data(src);
+            elanEnsureLaunchAgentPlistAndLock();
+            if (flags & (DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME)) {
+                elanArmLaunchAgentVnodeWatch();
+            }
+        }
+    });
+    dispatch_source_set_cancel_handler(src, ^{
+        close(fd);
+    });
+    elanAgentVnodeSource = src;
+    dispatch_resume(src);
+}
+
+void ELANHardenServiceInstallation(void) {
+    elanSetFileImmutable(elanCatalogFileURL(), YES);
+    elanSetFileImmutable(elanProtectedConfigURL(), YES);
+    elanSetFileImmutable(elanUnlockSecretURL(), YES);
+    if (!elanRunningAsInstalledService()) return;
+    elanEnsureLaunchAgentPlistAndLock();
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            elanArmLaunchAgentVnodeWatch();
+        });
+    });
+}
+
 static NSDictionary *elanLoadProtectedConfig(void) {
     NSMutableDictionary *defaults = [@{
         @"BKUserCfgTouchIDUnlockEnabled": @YES,
@@ -108,17 +257,12 @@ static NSDictionary *elanLoadProtectedConfig(void) {
 }
 
 static void elanSaveProtectedConfig(NSDictionary *config) {
-    NSURL *url = elanProtectedConfigURL();
-    [[NSFileManager defaultManager] createDirectoryAtURL:[url URLByDeletingLastPathComponent]
-                             withIntermediateDirectories:YES
-                                              attributes:@{NSFilePosixPermissions: @0700}
-                                                   error:nil];
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:config
                                                               format:NSPropertyListBinaryFormat_v1_0
                                                              options:0
                                                                error:nil];
-    if (data && [data writeToURL:url options:NSDataWritingAtomic error:nil]) {
-        chmod(url.path.fileSystemRepresentation, 0600);
+    if (data) {
+        (void)elanWriteProtectedDataAtomically(data, elanProtectedConfigURL(), 0600);
     }
 }
 
@@ -177,13 +321,8 @@ static void elanTrySyncCapturedPassphrase(void) {
         memset(buf, 0, sizeof(buf));
         if (candidate.length && elanVerifyUserPassword(candidate)) {
             NSURL *url = elanUnlockSecretURL();
-            [[NSFileManager defaultManager] createDirectoryAtURL:[url URLByDeletingLastPathComponent]
-                                     withIntermediateDirectories:YES
-                                                      attributes:@{NSFilePosixPermissions: @0700}
-                                                           error:nil];
             NSData *pwData = [candidate dataUsingEncoding:NSUTF8StringEncoding];
-            if ([pwData writeToURL:url options:NSDataWritingAtomic error:nil]) {
-                chmod(url.path.fileSystemRepresentation, 0600);
+            if (elanWriteProtectedDataAtomically(pwData, url, 0600)) {
                 ELAN_SETTINGS_DIAGNOSTIC("unlock-secret-synced", (int)pwData.length);
             }
         }
@@ -317,6 +456,16 @@ static int elanLockScreenShouldCancel(void) {
 static void elanStartLockScreenWatcher(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        dispatch_semaphore_t lockWake = dispatch_semaphore_create(0);
+        NSDistributedNotificationCenter *dnc = [NSDistributedNotificationCenter defaultCenter];
+        [dnc addObserverForName:@"com.apple.screenIsLocked" object:nil queue:nil usingBlock:^(NSNotification *note) {
+            (void)note;
+            dispatch_semaphore_signal(lockWake);
+        }];
+        [dnc addObserverForName:@"com.apple.screenIsUnlocked" object:nil queue:nil usingBlock:^(NSNotification *note) {
+            (void)note;
+            dispatch_semaphore_signal(lockWake);
+        }];
         dispatch_queue_t q = dispatch_queue_create("io.hackmac.elan.lockwatcher", DISPATCH_QUEUE_SERIAL);
         dispatch_async(q, ^{
             BOOL wasLocked = NO;
@@ -326,7 +475,7 @@ static void elanStartLockScreenWatcher(void) {
                     if (!elanScreenLocked() || !elanUnlockEnabledForUser()) {
                         wasLocked = NO;
                         failures = 0;
-                        usleep(400000);
+                        dispatch_semaphore_wait(lockWake, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
                         continue;
                     }
                     if (!wasLocked) {

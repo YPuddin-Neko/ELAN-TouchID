@@ -8,6 +8,7 @@ void ELANObserveSettingsDriver();
 int main(void) {
     @autoreleasepool {
         if (!getuid() || geteuid() != getuid()) return 2;
+        ELANHardenServiceInstallation();
         // launchd retains IOKit events until consumed. XPC reads check the current device independently.
         xpc_set_event_stream_handler("com.apple.iokit.matching", dispatch_get_main_queue(), ^(xpc_object_t event) {
             const char *name = xpc_dictionary_get_string(event, XPC_EVENT_KEY_NAME);

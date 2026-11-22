@@ -5,8 +5,9 @@
 ## 工作机制
 
 1. **服务启动与目录同步**
-   - `ELANSensorService` 由 LaunchAgent（`io.github.hackintosh-tools.elan-usb.plist`）在用户登录后自动拉起，监听 Mach 服务 `io.hackmac.elan.touchid`。
-   - 启动时连接内核 `ELANEnrollmentPolicyClient`，激活当前会话生物识别可用性并同步已录入的指纹 UUID 列表。
+   - `ELANSensorService` 由 LaunchAgent（`io.github.hackintosh-tools.elan-usb.plist`）在用户登录后自动拉起并由 `KeepAlive` 常驻守护，监听 Mach 服务 `io.hackmac.elan.touchid`。
+   - 启动时对服务二进制、LaunchAgent 配置及指纹数据文件自动施加 `UF_IMMUTABLE`（`uchg`）防误删保护，并通过 `DISPATCH_SOURCE_TYPE_VNODE` 监听 LaunchAgent 配置状态以在异常缺失时自动恢复。
+   - 连接内核 `ELANEnrollmentPolicyClient`，激活当前会话生物识别可用性并同步已录入的指纹 UUID 列表。
 
 2. **系统设置指纹录入与管理（`SettingsEnrollment.inc`）**
    - 实现 `BiometricKitXpcProtocol` 服务端接口，支持在「系统设置 → 触控 ID 与密码」中直接录入、重命名、删除指纹，以及读写触控 ID 功能开关。
