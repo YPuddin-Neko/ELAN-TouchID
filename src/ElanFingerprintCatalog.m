@@ -240,7 +240,8 @@ static ElanCatalogWriter fileWriter(NSURL *fileURL, unsigned user) {
             return errSecAuthFailed;
         if ((dirStat.st_mode & 0077) != 0) (void)chmod(dirPath, 0700);
         struct stat destStat = {};
-        if (lstat(destPath, &destStat) == 0 && (!S_ISREG(destStat.st_mode) || destStat.st_uid != user))
+        BOOL hadDest = (lstat(destPath, &destStat) == 0);
+        if (hadDest && (!S_ISREG(destStat.st_mode) || destStat.st_uid != user))
             return errSecAuthFailed;
         NSString *pattern = [dirURL.path stringByAppendingPathComponent:@".native-catalog.XXXXXX"];
         NSMutableData *tmplData = [[pattern dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
@@ -265,7 +266,15 @@ static ElanCatalogWriter fileWriter(NSURL *fileURL, unsigned user) {
         }
         if (fsync(fd) != 0) { close(fd); unlink(tmpl); return errSecIO; }
         if (close(fd) != 0) { unlink(tmpl); return errSecIO; }
-        if (rename(tmpl, destPath) != 0) { unlink(tmpl); return errSecIO; }
+        if (hadDest && (destStat.st_flags & UF_IMMUTABLE))
+            (void)chflags(destPath, destStat.st_flags & ~(uint32_t)UF_IMMUTABLE);
+        if (rename(tmpl, destPath) != 0) {
+            if (hadDest && (destStat.st_flags & UF_IMMUTABLE))
+                (void)chflags(destPath, destStat.st_flags);
+            unlink(tmpl);
+            return errSecIO;
+        }
+        (void)chflags(destPath, UF_IMMUTABLE);
         return errSecSuccess;
     };
 }
