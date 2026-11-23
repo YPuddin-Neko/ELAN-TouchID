@@ -340,6 +340,11 @@ static BOOL elanScreenLocked(void) {
     return yes;
 }
 
+static BOOL elanScreenLockedAndAwake(void) {
+    if (CGDisplayIsAsleep(CGMainDisplayID())) return NO;
+    return elanScreenLocked();
+}
+
 static BOOL elanUnlockEnabledForUser(void) {
     NSDictionary *cfg = elanLoadProtectedConfig();
     return [cfg[@"BKUserCfgTouchIDUnlockEnabled"] boolValue];
@@ -450,7 +455,7 @@ void ELANSyncPublishedCatalog(void) {
 }
 
 static int elanLockScreenShouldCancel(void) {
-    return cancelled != 0 || !elanScreenLocked() || !elanUnlockEnabledForUser();
+    return cancelled != 0 || !elanScreenLockedAndAwake() || !elanUnlockEnabledForUser();
 }
 
 static void elanStartLockScreenWatcher(void) {
@@ -464,15 +469,30 @@ static void elanStartLockScreenWatcher(void) {
         }];
         [dnc addObserverForName:@"com.apple.screenIsUnlocked" object:nil queue:nil usingBlock:^(NSNotification *note) {
             (void)note;
+            cancelled = 1;
             dispatch_semaphore_signal(lockWake);
         }];
+        NSNotificationCenter *wsnc = [[NSWorkspace sharedWorkspace] notificationCenter];
+        for (NSNotificationName name in @[NSWorkspaceScreensDidSleepNotification, NSWorkspaceWillSleepNotification]) {
+            [wsnc addObserverForName:name object:nil queue:nil usingBlock:^(NSNotification *note) {
+                (void)note;
+                cancelled = 1;
+                dispatch_semaphore_signal(lockWake);
+            }];
+        }
+        for (NSNotificationName name in @[NSWorkspaceScreensDidWakeNotification, NSWorkspaceDidWakeNotification]) {
+            [wsnc addObserverForName:name object:nil queue:nil usingBlock:^(NSNotification *note) {
+                (void)note;
+                dispatch_semaphore_signal(lockWake);
+            }];
+        }
         dispatch_queue_t q = dispatch_queue_create("io.hackmac.elan.lockwatcher", DISPATCH_QUEUE_SERIAL);
         dispatch_async(q, ^{
             BOOL wasLocked = NO;
             int failures = 0;
             for (;;) {
                 @autoreleasepool {
-                    if (!elanScreenLocked() || !elanUnlockEnabledForUser()) {
+                    if (!elanScreenLockedAndAwake() || !elanUnlockEnabledForUser()) {
                         wasLocked = NO;
                         failures = 0;
                         dispatch_semaphore_wait(lockWake, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
@@ -483,7 +503,7 @@ static void elanStartLockScreenWatcher(void) {
                         failures = 0;
                         // Give coreauthd 600ms to claim the sensor first if it is active.
                         usleep(600000);
-                        if (!elanScreenLocked()) continue;
+                        if (!elanScreenLockedAndAwake()) continue;
                     }
                     if (failures >= 5) {
                         usleep(500000);
