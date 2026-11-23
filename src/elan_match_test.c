@@ -33,6 +33,12 @@ typedef struct {
 static int io(Sensor *s, unsigned char ep, unsigned char *b, int len) {
     int n = 0;
     int r = libusb_bulk_transfer(s->h, ep, b, len, &n, 3000);
+    if (r == LIBUSB_ERROR_PIPE) {
+        libusb_clear_halt(s->h, ep);
+        if (ep != 0x82) {
+            r = libusb_bulk_transfer(s->h, ep, b, len, &n, 3000);
+        }
+    }
     if (r || n != len) {
         fprintf(stderr, "USB通信失败 %02x: %s (%d/%d)\n",
                 ep, libusb_error_name(r), n, len);
@@ -53,8 +59,29 @@ static int frameWithDelay(Sensor *s, unsigned short *out, useconds_t delayUs) {
         unsigned char status;
         if (!command(s, 0x40, 0x13) || !io(s, 0x83, &status, 1)) return 0;
     }
-    if (!command(s, 0x00, 0x09) ||
-        !io(s, 0x82, s->raw, s->w * s->hgt * 2)) return 0;
+    if (!command(s, 0x00, 0x09)) return 0;
+    if (!io(s, 0x82, s->raw, s->w * s->hgt * 2)) {
+        libusb_clear_halt(s->h, 0x01);
+        libusb_clear_halt(s->h, 0x82);
+        libusb_clear_halt(s->h, 0x83);
+        (void)command(s, 0x00, 0x0b);
+        if (!command(s, 0x00, 0x09) || !io(s, 0x82, s->raw, s->w * s->hgt * 2)) {
+            if (s->claimed) {
+                libusb_release_interface(s->h, 0);
+                s->claimed = 0;
+            }
+            if (libusb_reset_device(s->h) == 0 && libusb_claim_interface(s->h, 0) == 0) {
+                s->claimed = 1;
+                libusb_clear_halt(s->h, 0x01);
+                libusb_clear_halt(s->h, 0x82);
+                libusb_clear_halt(s->h, 0x83);
+                (void)command(s, 0x00, 0x0b);
+                if (!command(s, 0x00, 0x09) || !io(s, 0x82, s->raw, s->w * s->hgt * 2)) return 0;
+            } else {
+                return 0;
+            }
+        }
+    }
     elanpress_rotate_frame(s->raw, out, s->w, s->hgt);
     if (delayUs) usleep(delayUs);
     return !cancelled;
@@ -101,6 +128,9 @@ static int open_sensor(Sensor *s) {
     r = libusb_claim_interface(s->h, 0);
     if (r) { fprintf(stderr, "无法占用指纹接口: %s\n", libusb_error_name(r)); goto failed; }
     s->claimed = 1;
+    libusb_clear_halt(s->h, 0x01);
+    libusb_clear_halt(s->h, 0x82);
+    libusb_clear_halt(s->h, 0x83);
     if (!command(s, 0x40, 0x19) || !io(s, 0x83, firmware, 2) ||
         !command(s, 0x00, 0x0c) || !io(s, 0x83, dim, 4)) goto failed;
     s->firmware = ((uint16_t)firmware[0] << 8) | firmware[1];
