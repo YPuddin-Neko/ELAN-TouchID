@@ -15,7 +15,7 @@
 | 集成显卡 | 英特尔 超高清显卡 620                                      |
 | 显示器   | LQ156M1JW01 SHP14C3 1920x1080 344x194mm 15.5-inch          |
 | 声卡     | 瑞昱 ALC256 (节点: 69)                                     |
-| 无线网卡 | 英特尔 Wireless-AC 9462                                    |
+| 无线网卡 | 英特尔 Wireless-AC 9560                                    |
 | 触控板   | ELAN2303                                                   |
 | 指纹模块 | ELAN USB Fingerprint (`04f3:0c1a`，144 × 64，固件 `0x0142`) |
 | 操作系统 | macOS Sequoia 15.8.1 (Build `24H32`，Intel `x86_64`)       |
