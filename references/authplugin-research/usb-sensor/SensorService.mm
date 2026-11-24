@@ -25,6 +25,9 @@ int main(void) {
         }, ^BOOL(NSXPCConnection *peer, id accessory, BOOL (^present)(void)) {
             return ELANAcceptSettingsEnrollment(peer, accessory, present);
         });
-        dispatch_main();
+        NSRunLoop *mainRunLoop = NSRunLoop.currentRunLoop;
+        [mainRunLoop addPort:[NSMachPort port] forMode:NSDefaultRunLoopMode];
+        [mainRunLoop run];
     }
+    return 1;
 }
